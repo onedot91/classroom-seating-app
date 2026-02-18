@@ -45,6 +45,9 @@ const App: React.FC = () => {
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'restore', item: HistoryItem } | null>(null);
   
+  // 모바일 터치 이동을 위한 선택된 좌석 상태
+  const [selectedSeat, setSelectedSeat] = useState<{r: number, c: number} | null>(null);
+
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [newRecordTitle, setNewRecordTitle] = useState('');
   
@@ -98,6 +101,11 @@ const App: React.FC = () => {
     }
   }, [config.students, isShuffling, countdown]);
 
+  // 편집 모드가 바뀌면 선택된 좌석 초기화
+  useEffect(() => {
+    setSelectedSeat(null);
+  }, [editMode]);
+
   const stopAllTimers = () => {
     if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
     if (shuffleIntervalRef.current) clearInterval(shuffleIntervalRef.current);
@@ -138,10 +146,11 @@ const App: React.FC = () => {
       });
     }, 1000);
 
+    // 모바일 성능을 위해 업데이트 주기를 150ms -> 200ms로 조정
     shuffleIntervalRef.current = window.setInterval(() => {
       setDisplayStudents(prev => [...prev].sort(() => Math.random() - 0.5));
       audioService.playShuffleTick();
-    }, 150);
+    }, 200);
 
     movementIntervalRef.current = window.setInterval(() => {
       const newOffsets: Record<string, { x: number, y: number }> = {};
@@ -235,16 +244,36 @@ const App: React.FC = () => {
     setConfirmAction(null);
   };
 
-  const handleSeatGroupUpdate = (r: number, c: number) => {
-    if (editMode !== 'group') return;
-    audioService.playClick();
-    const key = `${r},${c}`;
-    setConfig(prev => {
-      const newGroupMap = { ...prev.groupMap };
-      if (selectedGroupId === 0) delete newGroupMap[key];
-      else newGroupMap[key] = selectedGroupId;
-      return { ...prev, groupMap: newGroupMap };
-    });
+  const handleSeatInteraction = (r: number, c: number) => {
+    if (editMode === 'group') {
+        audioService.playClick();
+        const key = `${r},${c}`;
+        setConfig(prev => {
+          const newGroupMap = { ...prev.groupMap };
+          if (selectedGroupId === 0) delete newGroupMap[key];
+          else newGroupMap[key] = selectedGroupId;
+          return { ...prev, groupMap: newGroupMap };
+        });
+    } else if (editMode === 'position') {
+        // Touch & Drop Logic
+        if (selectedSeat) {
+            // 이미 선택된 좌석이 있을 때
+            if (selectedSeat.r === r && selectedSeat.c === c) {
+                // 같은 좌석을 다시 누르면 선택 취소
+                setSelectedSeat(null);
+                audioService.playClick();
+            } else {
+                // 다른 좌석을 누르면 교환(이동)
+                handleSeatMove(selectedSeat, { r, c });
+                setSelectedSeat(null);
+                audioService.playClick(); // 이동 완료 소리
+            }
+        } else {
+            // 선택된 좌석이 없을 때 새로 선택
+            setSelectedSeat({ r, c });
+            audioService.playClick();
+        }
+    }
   };
 
   const handleSeatMove = (from: {r: number, c: number}, to: {r: number, c: number}) => {
@@ -341,7 +370,7 @@ const App: React.FC = () => {
   }, [visibleRange, config.positions, displayStudents, config.groupMap]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#fdfbf7] text-stone-800 relative overflow-hidden font-['Noto_Sans_KR']">
+    <div className="h-[100dvh] w-full flex flex-col bg-[#fdfbf7] text-stone-800 relative overflow-hidden font-['Noto_Sans_KR']">
       
       {/* 제목 입력 모달 */}
       {isSaveModalOpen && (
@@ -573,12 +602,12 @@ const App: React.FC = () => {
       )}
 
       {/* 헤더 */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-stone-200 px-4 lg:px-8 py-3 flex items-center justify-between sticky top-0 z-40 no-print shadow-sm">
+      <header className="bg-white/80 backdrop-blur-md border-b border-stone-200 px-4 lg:px-8 py-2 lg:py-3 flex items-center justify-between sticky top-0 z-40 no-print shadow-sm h-14 lg:h-auto shrink-0">
         <div className="flex items-center gap-3">
-          <div className="bg-gradient-to-br from-amber-400 to-orange-500 p-2 lg:p-2.5 rounded-2xl shadow-lg shadow-amber-200 transform -rotate-3 hover:rotate-0 transition-transform duration-300">
-            <Sparkles className="text-white w-[18px] h-[18px] lg:w-5 lg:h-5" fill="white" />
+          <div className="bg-gradient-to-br from-amber-400 to-orange-500 p-1.5 lg:p-2.5 rounded-xl lg:rounded-2xl shadow-lg shadow-amber-200 transform -rotate-3 hover:rotate-0 transition-transform duration-300">
+            <Sparkles className="text-white w-4 h-4 lg:w-5 lg:h-5" fill="white" />
           </div>
-          <h1 className="text-xl lg:text-2xl font-black tracking-tight text-stone-800 font-jua mt-1">자리 바꾸기</h1>
+          <h1 className="text-lg lg:text-2xl font-black tracking-tight text-stone-800 font-jua mt-1">자리 바꾸기</h1>
         </div>
         
         <div className="flex items-center gap-2 lg:gap-3">
@@ -604,7 +633,7 @@ const App: React.FC = () => {
           {view === 'layout' ? (
             <button 
               onClick={handleEnterSettings} 
-              className="flex items-center gap-2 px-4 py-2 lg:px-6 lg:py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm text-stone-600 hover:bg-stone-50 border-stone-200 bg-white hover:border-stone-300"
+              className="flex items-center gap-2 px-3 py-1.5 lg:px-6 lg:py-2.5 rounded-xl lg:rounded-2xl transition-all font-bold text-sm border-2 shadow-sm text-stone-600 hover:bg-stone-50 border-stone-200 bg-white hover:border-stone-300"
             >
               <SettingsIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5 hidden sm:inline">명단 관리</span>
             </button>
@@ -623,13 +652,13 @@ const App: React.FC = () => {
         {view === 'layout' ? (
           <>
             {/* 사이드바 메뉴 (모바일: 하단 컨트롤 패널 / 데스크톱: 좌측 사이드바) */}
-            <div className="w-full lg:w-[300px] bg-white border-t lg:border-t-0 lg:border-r border-stone-200 p-4 lg:p-6 flex flex-col gap-4 lg:gap-6 z-30 no-print flex-shrink-0 relative shadow-[0_-4px_24px_-12px_rgba(0,0,0,0.1)] lg:shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)] order-2 lg:order-1 overflow-y-auto lg:overflow-visible max-h-[35vh] lg:max-h-none">
+            <div className="w-full lg:w-[300px] bg-white border-t lg:border-t-0 lg:border-r border-stone-200 p-3 lg:p-6 flex flex-col gap-3 lg:gap-6 z-30 no-print flex-shrink-0 relative shadow-[0_-4px_24px_-12px_rgba(0,0,0,0.1)] lg:shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)] order-2 lg:order-1 overflow-y-auto lg:overflow-visible h-auto max-h-[35vh] lg:max-h-none lg:h-auto">
               <section className="flex flex-col gap-4">
                 <button 
                   onClick={handleShuffleStart}
                   disabled={isShuffling}
                   className={`
-                    w-full flex lg:flex-col items-center justify-center gap-3 lg:gap-2 py-4 lg:py-8 rounded-[1.5rem] lg:rounded-[2rem] text-xl lg:text-2xl font-black transition-all duration-200 font-jua group relative overflow-hidden
+                    w-full flex lg:flex-col items-center justify-center gap-3 lg:gap-2 py-3 lg:py-8 rounded-[1rem] lg:rounded-[2rem] text-xl lg:text-2xl font-black transition-all duration-200 font-jua group relative overflow-hidden
                     ${isShuffling 
                       ? 'bg-stone-400 text-white cursor-not-allowed opacity-50' 
                       : 'bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-[0_4px_0_#b45309,0_8px_15px_-5px_rgba(180,83,9,0.4)] lg:shadow-[0_8px_0_#b45309,0_15px_20px_-5px_rgba(180,83,9,0.4)] hover:-translate-y-1 active:translate-y-[4px] active:shadow-none'
@@ -637,32 +666,32 @@ const App: React.FC = () => {
                   `}
                 >
                   <div className="absolute inset-x-0 top-0 w-2 lg:h-3 bg-white/20 rounded-t-[2rem]"></div>
-                  <RefreshCw strokeWidth={3} className={`relative z-10 drop-shadow-sm w-6 h-6 lg:w-9 lg:h-9 ${isShuffling ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
+                  <RefreshCw strokeWidth={3} className={`relative z-10 drop-shadow-sm w-5 h-5 lg:w-9 lg:h-9 ${isShuffling ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
                   <span className="mt-0.5 lg:mt-1 relative z-10 drop-shadow-sm">{isShuffling ? `${countdown}초!` : '자리 섞기'}</span>
                 </button>
               </section>
 
-              <section className="grid grid-cols-3 lg:flex lg:flex-col gap-3">
+              <section className="grid grid-cols-3 lg:flex lg:flex-col gap-2 lg:gap-3 pb-safe">
                 <button 
                   onClick={handleCapture}
-                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-2 lg:gap-3 w-full p-3 lg:p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
+                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-1 lg:gap-3 w-full p-2 lg:p-3.5 rounded-xl lg:rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
-                  <div className="bg-white p-2 lg:p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Camera size={18} /></div>
-                  <span className="font-bold text-xs lg:text-base font-jua pt-0.5">이미지 캡쳐</span>
+                  <div className="bg-white p-1.5 lg:p-2.5 rounded-lg lg:rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Camera size={18} /></div>
+                  <span className="font-bold text-[10px] lg:text-base font-jua pt-0.5">이미지 캡쳐</span>
                 </button>
                 <button 
                   onClick={triggerSaveModal}
-                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-2 lg:gap-3 w-full p-3 lg:p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
+                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-1 lg:gap-3 w-full p-2 lg:p-3.5 rounded-xl lg:rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
-                  <div className="bg-white p-2 lg:p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Save size={18} /></div>
-                  <span className="font-bold text-xs lg:text-base font-jua pt-0.5">현재 배치 저장</span>
+                  <div className="bg-white p-1.5 lg:p-2.5 rounded-lg lg:rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Save size={18} /></div>
+                  <span className="font-bold text-[10px] lg:text-base font-jua pt-0.5">현재 배치 저장</span>
                 </button>
                 <button 
                   onClick={() => { audioService.playClick(); setIsHistoryOpen(true); }}
-                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-2 lg:gap-3 w-full p-3 lg:p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
+                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-1 lg:gap-3 w-full p-2 lg:p-3.5 rounded-xl lg:rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
-                  <div className="bg-white p-2 lg:p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><History size={18} /></div>
-                  <span className="font-bold text-xs lg:text-base font-jua pt-0.5">추억 저장소</span>
+                  <div className="bg-white p-1.5 lg:p-2.5 rounded-lg lg:rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><History size={18} /></div>
+                  <span className="font-bold text-[10px] lg:text-base font-jua pt-0.5">추억 저장소</span>
                 </button>
               </section>
               
@@ -674,7 +703,7 @@ const App: React.FC = () => {
             </div>
 
             {/* 교실 배치 영역 (모바일: 상단 / 데스크톱: 우측) */}
-            <div className="flex-1 overflow-hidden flex flex-col items-center justify-center p-4 lg:p-12 bg-[#fdfbf7] relative order-1 lg:order-2 min-h-[50vh]">
+            <div className="flex-1 overflow-hidden flex flex-col items-center justify-center p-4 lg:p-12 bg-[#fdfbf7] relative order-1 lg:order-2 h-full">
               {/* 배경 패턴 */}
               <div className="absolute inset-0 opacity-[0.05] pointer-events-none bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
 
@@ -682,7 +711,11 @@ const App: React.FC = () => {
                 <div className="absolute top-4 lg:top-8 z-20 animate-in slide-in-from-top duration-300 w-full flex justify-center px-4">
                   <div className="px-4 lg:px-6 py-2 lg:py-3 rounded-full border-2 border-amber-100 bg-white/90 backdrop-blur shadow-lg shadow-amber-50 flex items-center gap-2 lg:gap-3 font-bold text-sm text-amber-900 max-w-full">
                     <Info className="text-amber-500 flex-shrink-0 w-4 h-4 lg:w-[18px] lg:h-[18px]" />
-                    <span className="font-jua text-sm lg:text-lg pt-0.5 truncate">{editMode === 'position' ? '책상을 드래그하여 옮겨보세요.' : '번호 선택 후 책상을 누르세요.'}</span>
+                    <span className="font-jua text-sm lg:text-lg pt-0.5 truncate">
+                        {editMode === 'position' 
+                            ? (selectedSeat ? '이동할 빈 자리를 선택하세요.' : '이동할 책상을 선택하세요.') 
+                            : '번호 선택 후 책상을 누르세요.'}
+                    </span>
                   </div>
                 </div>
               )}
@@ -706,10 +739,11 @@ const App: React.FC = () => {
                   seats={seats} 
                   range={visibleRange}
                   editMode={editMode}
-                  onSeatClick={handleSeatGroupUpdate}
+                  onSeatClick={handleSeatInteraction}
                   isShuffling={isShuffling}
                   shufflingOffsets={shufflingOffsets}
                   onMove={handleSeatMove}
+                  selectedSeat={selectedSeat}
                 />
               </div>
             </div>
@@ -732,9 +766,10 @@ interface LayoutViewProps {
   isShuffling: boolean;
   shufflingOffsets: Record<string, { x: number, y: number }>;
   onMove: (from: {r: number, c: number}, to: {r: number, c: number}) => void;
+  selectedSeat: {r: number, c: number} | null;
 }
 
-const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatClick, isShuffling, shufflingOffsets, onMove }) => {
+const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatClick, isShuffling, shufflingOffsets, onMove, selectedSeat }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [dragOverPos, setDragOverPos] = useState<string | null>(null);
@@ -752,7 +787,9 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
         const gh = 200 + (rows * 120); // 칠판 높이 + 좌석 높이
         
         // 화면에 꽉 차게 보이되, 너무 작아지지 않도록 조정
-        setScale(Math.min(cw / gw, ch / gh, 1.2));
+        // 모바일에서는 조금 더 여백을 줄여서 크게 보이도록 0.95 비율 적용
+        const maxScale = window.innerWidth < 1024 ? 1.0 : 1.2;
+        setScale(Math.min(cw / gw, ch / gh, maxScale));
       }
     };
     updateScale();
@@ -779,6 +816,8 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
             const posKey = `${seat.r},${seat.c}`;
             const offset = shufflingOffsets[posKey] || { x: 0, y: 0 };
             const isOver = dragOverPos === posKey;
+            // 선택된 좌석인지 확인
+            const isSelected = selectedSeat?.r === seat.r && selectedSeat?.c === seat.c;
             
             return (
               <div 
@@ -806,12 +845,14 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                 }}
                 onClick={() => onSeatClick(seat.r, seat.c)}
                 className={`
-                  relative aspect-[1.3/1] transition-all duration-500 perspective-[1000px]
+                  relative aspect-[1.3/1] perspective-[1000px]
+                  ${!isShuffling ? 'transition-all duration-500' : ''}
                   ${seat.isActive ? '' : 'opacity-0'}
                   ${editMode === 'position' && seat.isActive ? 'cursor-grab hover:-translate-y-2' : ''}
                   ${editMode === 'position' && !seat.isActive ? 'opacity-30 border-2 border-dashed border-stone-400 cursor-pointer hover:border-amber-400 hover:bg-amber-50 rounded-xl' : ''}
-                  ${isShuffling && seat.isActive ? 'z-50' : ''}
+                  ${isShuffling && seat.isActive ? 'z-50 will-change-transform' : ''}
                   ${isOver ? 'scale-110 z-50' : ''}
+                  ${isSelected ? 'scale-110 z-50 ring-4 ring-amber-400 ring-offset-4 rounded-xl shadow-xl' : ''}
                 `}
                 style={isShuffling && seat.isActive ? {
                   transform: `translate(${offset.x}px, ${offset.y}px) rotate(${(Math.random() - 0.5) * 8}deg)`,
