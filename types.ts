@@ -1,0 +1,37 @@
+
+export type Gender = 'M' | 'F' | 'N';
+
+export interface Student {
+  name: string;
+  gender: Gender;
+}
+
+export interface Position {
+  r: number;
+  c: number;
+}
+
+export interface ClassroomConfig {
+  students: Student[];
+  positions: Position[]; // Coordinates for each student desk
+  groupMap: Record<string, number>; // "r,c" -> groupId
+}
+
+export interface HistoryItem {
+  id: string;
+  date: string;
+  title?: string; // 기록의 제목 (사용자 입력)
+  config: ClassroomConfig;
+  thumbnail?: string; // Base64 image string for preview
+}
+
+export type ViewType = 'layout' | 'settings';
+export type EditModeType = 'none' | 'position' | 'group';
+
+export interface Seat {
+  r: number;
+  c: number;
+  student: Student | null;
+  isActive: boolean;
+  groupId: number;
+}
