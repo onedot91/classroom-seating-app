@@ -119,7 +119,13 @@ const App: React.FC = () => {
     setIsShuffling(true);
     setCountdown(5);
     setShowCelebration(false);
-    audioService.playCountdownTick();
+    
+    // 첫 클릭 시 오디오 컨텍스트 활성화 시도 (모바일 대응)
+    try {
+      audioService.playCountdownTick();
+    } catch (e) {
+      console.warn("Audio play failed:", e);
+    }
     
     countdownTimerRef.current = window.setInterval(() => {
       setCountdown(prev => {
@@ -137,11 +143,18 @@ const App: React.FC = () => {
           setDisplayStudents(config.students);
           
           setShowCelebration(true);
-          audioService.playSuccess();
+          try {
+            audioService.playSuccess();
+          } catch(e) {}
           setTimeout(() => setShowCelebration(false), 2500);
           return null;
         }
-        audioService.playCountdownTick();
+        
+        try {
+          audioService.playCountdownTick();
+        } catch (e) {
+          // 오디오 실패해도 카운트다운은 계속됨
+        }
         return prev - 1;
       });
     }, 1000);
@@ -149,7 +162,9 @@ const App: React.FC = () => {
     // 모바일 성능을 위해 업데이트 주기를 150ms -> 200ms로 조정
     shuffleIntervalRef.current = window.setInterval(() => {
       setDisplayStudents(prev => [...prev].sort(() => Math.random() - 0.5));
-      audioService.playShuffleTick();
+      try {
+        audioService.playShuffleTick();
+      } catch(e) {}
     }, 200);
 
     movementIntervalRef.current = window.setInterval(() => {
