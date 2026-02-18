@@ -235,23 +235,65 @@ const App: React.FC = () => {
 
   const handleCapture = async () => {
     if (!layoutContainerRef.current || isCapturing) return;
+    const targetElement = (layoutContainerRef.current.querySelector('.layout-content') as HTMLElement | null) ?? layoutContainerRef.current;
+    const isMobileCapture = isCoarsePointerDevice || window.innerWidth < 1024;
+    const pixelRatio = isMobileCapture ? 1 : Math.min(1.5, window.devicePixelRatio || 1);
+    const rect = targetElement.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(rect.width));
+    const height = Math.max(1, Math.floor(rect.height));
+    const fileName = `seating_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
     try {
       setIsCapturing(true);
       audioService.playCapture();
-      const blob = await htmlToImage.toBlob(layoutContainerRef.current, {
+      const options = {
         backgroundColor: '#fdfbf7',
-        pixelRatio: Math.min(1.5, window.devicePixelRatio || 1),
+        width,
+        height,
+        canvasWidth: Math.floor(width * pixelRatio),
+        canvasHeight: Math.floor(height * pixelRatio),
+        pixelRatio,
         type: 'image/jpeg',
-        quality: 0.9,
-      });
-      if (!blob) return;
+        quality: isMobileCapture ? 0.82 : 0.9,
+        skipFonts: isMobileCapture,
+        style: {
+          animation: 'none',
+          transition: 'none',
+        },
+      } as const;
+      let blob = await htmlToImage.toBlob(targetElement, options);
+      if (!blob) {
+        const fallbackDataUrl = await htmlToImage.toJpeg(targetElement, options);
+        setExpandedImage(fallbackDataUrl);
+        return;
+      }
+      const nav = navigator as Navigator & {
+        canShare?: (data: { files: File[] }) => boolean;
+      };
+
+      if (isMobileCapture && nav.share) {
+        const file = new File([blob], fileName, { type: 'image/jpeg' });
+        if (!nav.canShare || nav.canShare({ files: [file] })) {
+          await nav.share({ files: [file], title: '자리 배치 캡쳐' });
+          return;
+        }
+      }
+
       const link = document.createElement('a');
       const objectUrl = URL.createObjectURL(blob);
       link.download = `자리배치_${new Date().toLocaleString().replace(/[: ]/g, '_')}.jpg`;
       link.href = objectUrl;
+      link.download = fileName;
+      link.rel = 'noopener';
+      if (isMobileCapture) link.target = '_blank';
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(objectUrl);
-    } catch (err) { console.error(err); }
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      console.error(err);
+      alert('이미지 캡쳐에 실패했습니다. 다시 시도해 주세요.');
+    }
     finally {
       setIsCapturing(false);
     }
