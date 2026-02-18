@@ -79,6 +79,7 @@ const App: React.FC = () => {
   const countdownTimerRef = useRef<number | null>(null);
   const countdownPollTimerRef = useRef<number | null>(null);
   const countdownEndTimeRef = useRef<number | null>(null);
+  const shuffleStartLockRef = useRef(false);
   const shuffleIntervalRef = useRef<number | null>(null);
   const movementIntervalRef = useRef<number | null>(null);
   const layoutContainerRef = useRef<HTMLDivElement>(null);
@@ -138,7 +139,8 @@ const App: React.FC = () => {
   };
 
   const handleShuffleStart = useCallback(() => {
-    if (isShuffling || countdown !== null) return;
+    if (shuffleStartLockRef.current || isShuffling || countdown !== null) return;
+    shuffleStartLockRef.current = true;
     
     stopAllTimers();
     setIsShuffling(true);
@@ -161,6 +163,7 @@ const App: React.FC = () => {
     const finalizeShuffle = () => {
       if (hasFinalized) return;
       hasFinalized = true;
+      shuffleStartLockRef.current = false;
       stopAllTimers();
       const shuffledPositions = [...currentPositions].sort(() => Math.random() - 0.5);
       setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
@@ -724,7 +727,7 @@ const App: React.FC = () => {
               <section className="flex flex-col gap-4">
                 <button 
                   onClick={handleShuffleStart}
-                  disabled={isShuffling}
+                  disabled={isShuffling || countdown !== null}
                   className={`
                     w-full flex lg:flex-col items-center justify-center gap-3 lg:gap-2 py-3 lg:py-8 rounded-[1rem] lg:rounded-[2rem] text-xl lg:text-2xl font-black transition-all duration-200 font-jua group relative overflow-hidden
                     ${isShuffling 
