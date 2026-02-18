@@ -44,6 +44,7 @@ const App: React.FC = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'restore', item: HistoryItem } | null>(null);
+  const [isCoarsePointerDevice, setIsCoarsePointerDevice] = useState(false);
   
   // 모바일 터치 이동을 위한 선택된 좌석 상태
   const [selectedSeat, setSelectedSeat] = useState<{r: number, c: number} | null>(null);
@@ -76,6 +77,8 @@ const App: React.FC = () => {
   
   const [displayStudents, setDisplayStudents] = useState<Student[]>(config.students);
   const countdownTimerRef = useRef<number | null>(null);
+  const countdownPollTimerRef = useRef<number | null>(null);
+  const countdownEndTimeRef = useRef<number | null>(null);
   const shuffleIntervalRef = useRef<number | null>(null);
   const movementIntervalRef = useRef<number | null>(null);
   const layoutContainerRef = useRef<HTMLDivElement>(null);
@@ -101,15 +104,37 @@ const App: React.FC = () => {
     }
   }, [config.students, isShuffling, countdown]);
 
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(pointer: coarse)');
+    const updatePointerType = () => setIsCoarsePointerDevice(mediaQuery.matches);
+    updatePointerType();
+    mediaQuery.addEventListener('change', updatePointerType);
+    return () => mediaQuery.removeEventListener('change', updatePointerType);
+  }, []);
+
   // 편집 모드가 바뀌면 선택된 좌석 초기화
   useEffect(() => {
     setSelectedSeat(null);
   }, [editMode]);
 
   const stopAllTimers = () => {
-    if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
-    if (shuffleIntervalRef.current) clearInterval(shuffleIntervalRef.current);
-    if (movementIntervalRef.current) clearInterval(movementIntervalRef.current);
+    if (countdownTimerRef.current !== null) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (countdownPollTimerRef.current !== null) {
+      clearInterval(countdownPollTimerRef.current);
+      countdownPollTimerRef.current = null;
+    }
+    if (shuffleIntervalRef.current !== null) {
+      clearInterval(shuffleIntervalRef.current);
+      shuffleIntervalRef.current = null;
+    }
+    if (movementIntervalRef.current !== null) {
+      clearInterval(movementIntervalRef.current);
+      movementIntervalRef.current = null;
+    }
+    countdownEndTimeRef.current = null;
   };
 
   const handleShuffleStart = useCallback(() => {
@@ -127,26 +152,34 @@ const App: React.FC = () => {
       console.warn("Audio play failed:", e);
     }
     
+    const currentStudents = config.students;
+    const currentPositions = config.positions;
+    const isCoarsePointer = isCoarsePointerDevice;
+    countdownEndTimeRef.current = Date.now() + 5000;
+    let hasFinalized = false;
+
+    const finalizeShuffle = () => {
+      if (hasFinalized) return;
+      hasFinalized = true;
+      stopAllTimers();
+      const shuffledPositions = [...currentPositions].sort(() => Math.random() - 0.5);
+      setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
+      setIsShuffling(false);
+      setCountdown(null);
+      setShufflingOffsets({});
+      setDisplayStudents(currentStudents);
+      setShowCelebration(true);
+      try {
+        audioService.playSuccess();
+      } catch(e) {}
+      setTimeout(() => setShowCelebration(false), 2500);
+    };
+
     countdownTimerRef.current = window.setInterval(() => {
       setCountdown(prev => {
         if (prev === null) return null;
         if (prev <= 1) {
-          stopAllTimers();
-          // 좌석 위치(positions)를 섞음
-          const shuffledPositions = [...config.positions].sort(() => Math.random() - 0.5);
-          setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
-          
-          setIsShuffling(false);
-          setShufflingOffsets({});
-          
-          // 화면 표시용 학생 명단은 원본 순서(번호순)대로 복구
-          setDisplayStudents(config.students);
-          
-          setShowCelebration(true);
-          try {
-            audioService.playSuccess();
-          } catch(e) {}
-          setTimeout(() => setShowCelebration(false), 2500);
+          finalizeShuffle();
           return null;
         }
         
@@ -159,22 +192,42 @@ const App: React.FC = () => {
       });
     }, 1000);
 
+    countdownPollTimerRef.current = window.setInterval(() => {
+      const endTime = countdownEndTimeRef.current;
+      if (endTime === null) return;
+      const remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+
+      if (remaining <= 0) {
+        finalizeShuffle();
+        return;
+      }
+      setCountdown(prev => (prev === null || prev === remaining ? prev : remaining));
+    }, 250);
+
     // 모바일 성능을 위해 업데이트 주기를 150ms -> 200ms로 조정
     shuffleIntervalRef.current = window.setInterval(() => {
       setDisplayStudents(prev => [...prev].sort(() => Math.random() - 0.5));
       try {
-        audioService.playShuffleTick();
+        if (!isCoarsePointer || Math.random() > 0.5) {
+          audioService.playShuffleTick();
+        }
       } catch(e) {}
-    }, 200);
+    }, isCoarsePointer ? 320 : 200);
 
     movementIntervalRef.current = window.setInterval(() => {
       const newOffsets: Record<string, { x: number, y: number }> = {};
-      config.positions.forEach((pos) => {
+      currentPositions.forEach((pos) => {
         newOffsets[`${pos.r},${pos.c}`] = { x: (Math.random() - 0.5) * 40, y: (Math.random() - 0.5) * 40 };
       });
       setShufflingOffsets(newOffsets);
-    }, 400);
-  }, [config.students, config.positions, isShuffling, countdown]);
+    }, isCoarsePointer ? 520 : 400);
+  }, [config.students, config.positions, isShuffling, countdown, isCoarsePointerDevice]);
+
+  useEffect(() => {
+    return () => {
+      stopAllTimers();
+    };
+  }, []);
 
   const handleCapture = async () => {
     if (!layoutContainerRef.current) return;
@@ -587,9 +640,9 @@ const App: React.FC = () => {
 
       {/* 카운트다운 오버레이 */}
       {countdown !== null && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none bg-stone-900/20 backdrop-blur-sm">
+        <div className={`fixed inset-0 z-[100] flex items-center justify-center pointer-events-none ${isCoarsePointerDevice ? 'bg-stone-900/25' : 'bg-stone-900/20 backdrop-blur-sm'}`}>
           <div 
-            className="text-[20vw] md:text-[15rem] font-black text-amber-500 animate-bounce font-jua select-none"
+            className={`text-[20vw] md:text-[15rem] font-black text-amber-500 font-jua select-none ${isCoarsePointerDevice ? '' : 'animate-bounce'}`}
             style={{ 
               textShadow: '4px 4px 0 #fff, 8px 8px 0 #b45309, 0 20px 40px rgba(0,0,0,0.2)',
               WebkitTextStroke: '4px white' 
@@ -603,7 +656,7 @@ const App: React.FC = () => {
       {/* 축하 효과 오버레이 */}
       {showCelebration && (
         <div className="fixed inset-0 pointer-events-none z-[100] flex items-center justify-center overflow-hidden">
-          {Array.from({ length: 50 }).map((_, i) => (
+          {Array.from({ length: isCoarsePointerDevice ? 24 : 50 }).map((_, i) => (
             <div key={i} className="absolute animate-[bounce_1s_infinite]" style={{
               left: `${Math.random() * 100}%`, top: `${Math.random() * 100}%`,
               transform: `rotate(${Math.random() * 360}deg)`,
@@ -870,7 +923,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                   ${isSelected ? 'scale-110 z-50 ring-4 ring-amber-400 ring-offset-4 rounded-xl shadow-xl' : ''}
                 `}
                 style={isShuffling && seat.isActive ? {
-                  transform: `translate(${offset.x}px, ${offset.y}px) rotate(${(Math.random() - 0.5) * 8}deg)`,
+                  transform: `translate(${offset.x}px, ${offset.y}px) rotate(${(offset.x + offset.y) * 0.08}deg)`,
                   transition: 'transform 0.4s ease-in-out'
                 } : {}}
               >
