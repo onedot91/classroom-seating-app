@@ -42,6 +42,7 @@ const App: React.FC = () => {
   const [showCelebration, setShowCelebration] = useState(false);
   const [shufflingOffsets, setShufflingOffsets] = useState<Record<string, { x: number, y: number }>>({});
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'restore', item: HistoryItem } | null>(null);
   const [isCoarsePointerDevice, setIsCoarsePointerDevice] = useState(false);
@@ -233,18 +234,27 @@ const App: React.FC = () => {
   }, []);
 
   const handleCapture = async () => {
-    if (!layoutContainerRef.current) return;
+    if (!layoutContainerRef.current || isCapturing) return;
     try {
+      setIsCapturing(true);
       audioService.playCapture();
-      const dataUrl = await htmlToImage.toPng(layoutContainerRef.current, {
+      const blob = await htmlToImage.toBlob(layoutContainerRef.current, {
         backgroundColor: '#fdfbf7',
-        cacheBust: true,
+        pixelRatio: Math.min(1.5, window.devicePixelRatio || 1),
+        type: 'image/jpeg',
+        quality: 0.9,
       });
+      if (!blob) return;
       const link = document.createElement('a');
-      link.download = `자리배치_${new Date().toLocaleString().replace(/[: ]/g, '_')}.png`;
-      link.href = dataUrl;
+      const objectUrl = URL.createObjectURL(blob);
+      link.download = `자리배치_${new Date().toLocaleString().replace(/[: ]/g, '_')}.jpg`;
+      link.href = objectUrl;
       link.click();
+      URL.revokeObjectURL(objectUrl);
     } catch (err) { console.error(err); }
+    finally {
+      setIsCapturing(false);
+    }
   };
 
   const triggerSaveModal = () => {
@@ -745,6 +755,7 @@ const App: React.FC = () => {
               <section className="grid grid-cols-3 lg:flex lg:flex-col gap-2 lg:gap-3 pb-safe">
                 <button 
                   onClick={handleCapture}
+                  disabled={isCapturing}
                   className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-1 lg:gap-3 w-full p-2 lg:p-3.5 rounded-xl lg:rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
                   <div className="bg-white p-1.5 lg:p-2.5 rounded-lg lg:rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Camera size={18} /></div>
