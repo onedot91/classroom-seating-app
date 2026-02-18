@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Settings as SettingsIcon, HomeIcon, RefreshCw, Trash2, PlusCircle, Sparkles, Layers, Move, Eraser, Info, Users, ChevronUp, ChevronDown, Camera, Save, History, X, Play, Maximize2, AlertCircle, Type, Smile } from 'lucide-react';
 import { ClassroomConfig, ViewType, Seat, EditModeType, Student, Gender, Position, HistoryItem } from './types';
@@ -262,7 +261,7 @@ const App: React.FC = () => {
         newPositions[fromIdx] = { r: to.r, c: to.c };
       }
 
-      // 모둠 속성 이동 (Move Group Attribute)
+      // 모둠 속성 이동
       const newGroupMap = { ...prev.groupMap };
       const fromKey = `${from.r},${from.c}`;
       const toKey = `${to.r},${to.c}`;
@@ -270,14 +269,12 @@ const App: React.FC = () => {
       const fromGroup = newGroupMap[fromKey];
       const toGroup = newGroupMap[toKey];
 
-      // from 위치의 모둠을 to 위치로 이동
       if (fromGroup !== undefined) {
         newGroupMap[toKey] = fromGroup;
       } else {
         delete newGroupMap[toKey];
       }
 
-      // to 위치의 모둠이 있었다면 from 위치로 이동 (Swap)
       if (toGroup !== undefined) {
         newGroupMap[fromKey] = toGroup;
       } else {
@@ -288,15 +285,13 @@ const App: React.FC = () => {
     });
   };
 
-  // 설정 화면 진입
   const handleEnterSettings = () => {
     audioService.playClick();
-    setEditingStudents(JSON.parse(JSON.stringify(config.students))); // 현재 설정 복사
+    setEditingStudents(JSON.parse(JSON.stringify(config.students)));
     setView('settings');
     setEditMode('none');
   };
 
-  // 설정 저장 및 교실로 이동
   const handleSaveAndExitSettings = () => {
     audioService.playSave();
     handleUpdateConfig(editingStudents);
@@ -308,13 +303,6 @@ const App: React.FC = () => {
       const positions = newStudents.length === prev.students.length 
         ? prev.positions 
         : newStudents.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
-      
-      // 학생 수나 명단이 바뀌어도 기존 모둠 설정이 가능한 유지되도록 함 (reset 방지)
-      // 단, 위치가 재설정되는 경우(newStudents.length != prev.students.length)에는 어쩔 수 없이 초기화되거나
-      // 혹은 기존 맵을 유지하되, 유효하지 않은 좌표만 정리하는 것이 좋음.
-      // 현재 로직상 위치가 변경되면 모둠 맵도 의미가 달라질 수 있으므로, 
-      // 학생 수가 같을 때만 모둠 맵을 유지하고, 다르면 초기화하는 기존 로직을 따르되,
-      // 요청사항은 "이동"에 관한 것이므로 여기서는 기존 로직 유지 (groupMap: {} -> groupMap: prev.groupMap when length matches)
       
       const groupMap = newStudents.length === prev.students.length ? prev.groupMap : {};
 
@@ -358,7 +346,7 @@ const App: React.FC = () => {
       {/* 제목 입력 모달 */}
       {isSaveModalOpen && (
         <div className="fixed inset-0 z-[300] bg-stone-900/60 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in zoom-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-8 flex flex-col gap-6 border-4 border-stone-100 relative overflow-hidden">
+          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 flex flex-col gap-6 border-4 border-stone-100 relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-2 bg-amber-400"></div>
             <div className="flex flex-col items-center text-center gap-2 mt-2">
               <div className="bg-amber-50 p-4 rounded-full text-amber-500 mb-1">
@@ -406,7 +394,7 @@ const App: React.FC = () => {
       {/* 확인 모달 */}
       {confirmAction && (
         <div className="fixed inset-0 z-[250] bg-black/50 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200">
-          <div className="bg-white p-8 rounded-[2rem] shadow-2xl max-w-sm w-full mx-4 flex flex-col items-center text-center border-4 border-stone-100">
+          <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-2xl max-w-sm w-full mx-4 flex flex-col items-center text-center border-4 border-stone-100">
             <div className={`p-4 rounded-full mb-4 ring-4 ${confirmAction.type === 'delete' ? 'bg-rose-100 text-rose-500 ring-rose-50' : 'bg-amber-100 text-amber-500 ring-amber-50'}`}>
               {confirmAction.type === 'delete' ? <Trash2 size={32} /> : <Play size={32} />}
             </div>
@@ -446,14 +434,14 @@ const App: React.FC = () => {
             className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors p-2 z-[410] rounded-full hover:bg-white/10"
             onClick={() => setExpandedImage(null)}
           >
-            <X size={48} />
+            <X className="w-8 h-8 md:w-12 md:h-12" />
           </button>
           
           <div className="relative max-w-[95vw] max-h-[90vh] flex items-center justify-center pointer-events-auto" onClick={e => e.stopPropagation()}>
              <img 
                src={expandedImage} 
                alt="Expanded Seating" 
-               className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl bg-white p-2" 
+               className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl bg-white p-2" 
              />
           </div>
         </div>
@@ -463,34 +451,35 @@ const App: React.FC = () => {
       {isHistoryOpen && (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-stone-900/80 backdrop-blur-xl animate-in fade-in duration-500 px-4 py-8">
           <div className="bg-[#fdfbf7] w-full max-w-6xl rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden h-full max-h-[90vh] border-8 border-white">
-            <div className="px-10 py-6 border-b border-stone-200 flex items-center justify-between bg-white/50 relative z-50">
-              <div className="flex items-center gap-5">
+            <div className="px-6 md:px-10 py-6 border-b border-stone-200 flex items-center justify-between bg-white/50 relative z-50">
+              <div className="flex items-center gap-3 md:gap-5">
                 <div className="bg-amber-500 p-3.5 rounded-2xl shadow-lg shadow-amber-200 text-white transform -rotate-6">
-                  <History size={28} strokeWidth={2.5} />
+                  <History className="w-6 h-6 md:w-7 md:h-7" strokeWidth={2.5} />
                 </div>
                 <div>
-                  <h2 className="text-3xl font-black text-stone-800 tracking-tight font-jua">추억 저장소</h2>
-                  <p className="text-stone-500 font-medium text-sm">우리 반의 지난 자리 배치 기록들이에요.</p>
+                  <h2 className="text-2xl md:text-3xl font-black text-stone-800 tracking-tight font-jua">추억 저장소</h2>
+                  <p className="text-stone-500 font-medium text-xs md:text-sm">우리 반의 지난 자리 배치 기록들이에요.</p>
                 </div>
               </div>
               <button 
                 onClick={() => { audioService.playClick(); setIsHistoryOpen(false); }} 
                 className="p-3 hover:bg-stone-100 rounded-full transition-all group border-2 border-stone-100 hover:border-stone-200"
               >
-                <X size={28} className="text-stone-400 group-hover:text-stone-600" />
+                <X className="text-stone-400 group-hover:text-stone-600 w-6 h-6 md:w-7 md:h-7" />
               </button>
             </div>
             
-            <div className="flex-1 overflow-y-auto px-10 py-10 custom-scrollbar bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:20px_20px]">
+            <div className="flex-1 overflow-y-auto px-6 md:px-10 py-10 custom-scrollbar bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:20px_20px]">
               {history.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full opacity-30 gap-6">
-                  <Smile size={100} className="text-stone-400" />
-                  <p className="text-2xl font-bold font-jua text-stone-400">아직 저장된 추억이 없어요.</p>
+                  <Smile className="text-stone-400 w-20 h-20 md:w-[100px] md:h-[100px]" />
+                  <p className="text-xl md:text-2xl font-bold font-jua text-stone-400">아직 저장된 추억이 없어요.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                   {history.map((item) => (
                     <div key={item.id} className="group bg-white rounded-[2rem] overflow-hidden hover:shadow-[0_20px_40px_-15px_rgba(0,0,0,0.1)] transition-all duration-300 flex flex-col border-2 border-stone-100 hover:border-amber-200 hover:-translate-y-1">
+                      {/* ... History Item Content ... */}
                       <div 
                         className="aspect-[16/10] bg-stone-50 relative overflow-hidden border-b-2 border-stone-100 cursor-zoom-in group/image"
                         onClick={() => setExpandedImage(item.thumbnail || null)}
@@ -556,7 +545,7 @@ const App: React.FC = () => {
       {countdown !== null && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none bg-stone-900/20 backdrop-blur-sm">
           <div 
-            className="text-[15rem] font-black text-amber-500 animate-bounce font-jua select-none"
+            className="text-[20vw] md:text-[15rem] font-black text-amber-500 animate-bounce font-jua select-none"
             style={{ 
               textShadow: '4px 4px 0 #fff, 8px 8px 0 #b45309, 0 20px 40px rgba(0,0,0,0.2)',
               WebkitTextStroke: '4px white' 
@@ -584,30 +573,30 @@ const App: React.FC = () => {
       )}
 
       {/* 헤더 */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-stone-200 px-8 py-3 flex items-center justify-between sticky top-0 z-40 no-print shadow-sm">
+      <header className="bg-white/80 backdrop-blur-md border-b border-stone-200 px-4 lg:px-8 py-3 flex items-center justify-between sticky top-0 z-40 no-print shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="bg-gradient-to-br from-amber-400 to-orange-500 p-2.5 rounded-2xl shadow-lg shadow-amber-200 transform -rotate-3 hover:rotate-0 transition-transform duration-300">
-            <Sparkles className="text-white" size={20} fill="white" />
+          <div className="bg-gradient-to-br from-amber-400 to-orange-500 p-2 lg:p-2.5 rounded-2xl shadow-lg shadow-amber-200 transform -rotate-3 hover:rotate-0 transition-transform duration-300">
+            <Sparkles className="text-white w-[18px] h-[18px] lg:w-5 lg:h-5" fill="white" />
           </div>
-          <h1 className="text-2xl font-black tracking-tight text-stone-800 font-jua mt-1">자리 바꾸기</h1>
+          <h1 className="text-xl lg:text-2xl font-black tracking-tight text-stone-800 font-jua mt-1">자리 바꾸기</h1>
         </div>
         
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 lg:gap-3">
           {view === 'layout' && (
             <div className="flex items-center bg-stone-100 rounded-2xl p-1 gap-1 border border-stone-200 mr-2">
               <button 
                 onClick={() => { audioService.playClick(); setEditMode(editMode === 'position' ? 'none' : 'position'); }} 
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${editMode === 'position' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-black/5' : 'text-stone-400 hover:text-stone-600 hover:bg-stone-200/50'}`}
+                className={`flex items-center gap-2 px-3 py-1.5 lg:px-4 lg:py-2 rounded-xl text-sm font-bold transition-all ${editMode === 'position' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-black/5' : 'text-stone-400 hover:text-stone-600 hover:bg-stone-200/50'}`}
               >
                 <Move size={16} />
-                <span className="font-jua text-base pt-0.5">이동</span>
+                <span className="font-jua text-sm lg:text-base pt-0.5 hidden sm:inline">이동</span>
               </button>
               <button 
                 onClick={() => { audioService.playClick(); setEditMode(editMode === 'group' ? 'none' : 'group'); }} 
-                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${editMode === 'group' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-black/5' : 'text-stone-400 hover:text-stone-600 hover:bg-stone-200/50'}`}
+                className={`flex items-center gap-2 px-3 py-1.5 lg:px-4 lg:py-2 rounded-xl text-sm font-bold transition-all ${editMode === 'group' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-black/5' : 'text-stone-400 hover:text-stone-600 hover:bg-stone-200/50'}`}
               >
                 <Layers size={16} />
-                <span className="font-jua text-base pt-0.5">모둠</span>
+                <span className="font-jua text-sm lg:text-base pt-0.5 hidden sm:inline">모둠</span>
               </button>
             </div>
           )}
@@ -615,97 +604,97 @@ const App: React.FC = () => {
           {view === 'layout' ? (
             <button 
               onClick={handleEnterSettings} 
-              className="flex items-center gap-2 px-6 py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm text-stone-600 hover:bg-stone-50 border-stone-200 bg-white hover:border-stone-300"
+              className="flex items-center gap-2 px-4 py-2 lg:px-6 lg:py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm text-stone-600 hover:bg-stone-50 border-stone-200 bg-white hover:border-stone-300"
             >
-              <SettingsIcon size={18} /> <span className="font-jua text-lg pt-0.5">명단 관리</span>
+              <SettingsIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5 hidden sm:inline">명단 관리</span>
             </button>
           ) : (
             <button 
               onClick={handleSaveAndExitSettings} 
-              className="flex items-center gap-2 px-6 py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm bg-amber-500 text-amber-950 border-amber-500 shadow-amber-200 hover:bg-amber-400 active:scale-95 active:shadow-none active:translate-y-0.5"
+              className="flex items-center gap-2 px-4 py-2 lg:px-6 lg:py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm bg-amber-500 text-amber-950 border-amber-500 shadow-amber-200 hover:bg-amber-400 active:scale-95 active:shadow-none active:translate-y-0.5"
             >
-              <HomeIcon size={18} /> <span className="font-jua text-lg pt-0.5">저장하고 교실로</span>
+              <HomeIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5">저장 후 교실로</span>
             </button>
           )}
         </div>
       </header>
 
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
         {view === 'layout' ? (
-          <div className="flex flex-1 overflow-hidden">
-            {/* 사이드바 메뉴 */}
-            <div className="w-[300px] bg-white border-r border-stone-200 p-6 flex flex-col gap-6 z-30 no-print flex-shrink-0 relative shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)]">
+          <>
+            {/* 사이드바 메뉴 (모바일: 하단 컨트롤 패널 / 데스크톱: 좌측 사이드바) */}
+            <div className="w-full lg:w-[300px] bg-white border-t lg:border-t-0 lg:border-r border-stone-200 p-4 lg:p-6 flex flex-col gap-4 lg:gap-6 z-30 no-print flex-shrink-0 relative shadow-[0_-4px_24px_-12px_rgba(0,0,0,0.1)] lg:shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)] order-2 lg:order-1 overflow-y-auto lg:overflow-visible max-h-[35vh] lg:max-h-none">
               <section className="flex flex-col gap-4">
                 <button 
                   onClick={handleShuffleStart}
                   disabled={isShuffling}
                   className={`
-                    w-full flex flex-col items-center justify-center gap-2 py-8 rounded-[2rem] text-2xl font-black transition-all duration-200 font-jua group relative overflow-hidden
+                    w-full flex lg:flex-col items-center justify-center gap-3 lg:gap-2 py-4 lg:py-8 rounded-[1.5rem] lg:rounded-[2rem] text-xl lg:text-2xl font-black transition-all duration-200 font-jua group relative overflow-hidden
                     ${isShuffling 
                       ? 'bg-stone-400 text-white cursor-not-allowed opacity-50' 
-                      : 'bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-[0_8px_0_#b45309,0_15px_20px_-5px_rgba(180,83,9,0.4)] hover:-translate-y-1 hover:shadow-[0_10px_0_#b45309,0_20px_25px_-5px_rgba(180,83,9,0.4)] active:translate-y-[6px] active:shadow-none'
+                      : 'bg-gradient-to-b from-amber-400 to-amber-500 text-amber-950 shadow-[0_4px_0_#b45309,0_8px_15px_-5px_rgba(180,83,9,0.4)] lg:shadow-[0_8px_0_#b45309,0_15px_20px_-5px_rgba(180,83,9,0.4)] hover:-translate-y-1 active:translate-y-[4px] active:shadow-none'
                     }
                   `}
                 >
-                  <div className="absolute inset-x-0 top-0 h-3 bg-white/20 rounded-t-[2rem]"></div>
-                  <RefreshCw size={36} strokeWidth={3} className={`relative z-10 drop-shadow-sm ${isShuffling ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
-                  <span className="mt-1 relative z-10 drop-shadow-sm">{isShuffling ? `${countdown}초!` : '자리 섞기'}</span>
+                  <div className="absolute inset-x-0 top-0 w-2 lg:h-3 bg-white/20 rounded-t-[2rem]"></div>
+                  <RefreshCw strokeWidth={3} className={`relative z-10 drop-shadow-sm w-6 h-6 lg:w-9 lg:h-9 ${isShuffling ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'}`} />
+                  <span className="mt-0.5 lg:mt-1 relative z-10 drop-shadow-sm">{isShuffling ? `${countdown}초!` : '자리 섞기'}</span>
                 </button>
               </section>
 
-              <section className="flex flex-col gap-3">
+              <section className="grid grid-cols-3 lg:flex lg:flex-col gap-3">
                 <button 
                   onClick={handleCapture}
-                  className="flex items-center gap-3 w-full p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
+                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-2 lg:gap-3 w-full p-3 lg:p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
-                  <div className="bg-white p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Camera size={18} /></div>
-                  <span className="font-bold text-base font-jua pt-0.5">이미지 캡쳐</span>
+                  <div className="bg-white p-2 lg:p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Camera size={18} /></div>
+                  <span className="font-bold text-xs lg:text-base font-jua pt-0.5">이미지 캡쳐</span>
                 </button>
                 <button 
                   onClick={triggerSaveModal}
-                  className="flex items-center gap-3 w-full p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
+                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-2 lg:gap-3 w-full p-3 lg:p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
-                  <div className="bg-white p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Save size={18} /></div>
-                  <span className="font-bold text-base font-jua pt-0.5">현재 배치 저장</span>
+                  <div className="bg-white p-2 lg:p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Save size={18} /></div>
+                  <span className="font-bold text-xs lg:text-base font-jua pt-0.5">현재 배치 저장</span>
                 </button>
                 <button 
                   onClick={() => { audioService.playClick(); setIsHistoryOpen(true); }}
-                  className="flex items-center gap-3 w-full p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
+                  className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-2 lg:gap-3 w-full p-3 lg:p-3.5 rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
-                  <div className="bg-white p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><History size={18} /></div>
-                  <span className="font-bold text-base font-jua pt-0.5">추억 저장소</span>
+                  <div className="bg-white p-2 lg:p-2.5 rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><History size={18} /></div>
+                  <span className="font-bold text-xs lg:text-base font-jua pt-0.5">추억 저장소</span>
                 </button>
               </section>
               
-              <div className="mt-auto opacity-40 hover:opacity-100 transition-opacity">
+              <div className="mt-auto opacity-40 hover:opacity-100 transition-opacity hidden lg:block">
                  <div className="w-full rounded-2xl border-2 border-dashed border-stone-200 p-4 flex flex-col items-center text-center gap-2">
                     <span className="text-xs font-bold text-stone-400 font-jua">오늘도 즐거운 하루 되세요!</span>
                  </div>
               </div>
             </div>
 
-            {/* 교실 배치 영역 */}
-            <div className="flex-1 overflow-hidden flex flex-col items-center justify-center p-12 bg-[#fdfbf7] relative">
-              {/* 배경 패턴 (모눈종이 느낌) */}
+            {/* 교실 배치 영역 (모바일: 상단 / 데스크톱: 우측) */}
+            <div className="flex-1 overflow-hidden flex flex-col items-center justify-center p-4 lg:p-12 bg-[#fdfbf7] relative order-1 lg:order-2 min-h-[50vh]">
+              {/* 배경 패턴 */}
               <div className="absolute inset-0 opacity-[0.05] pointer-events-none bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
 
               {editMode !== 'none' && (
-                <div className="absolute top-8 z-20 animate-in slide-in-from-top duration-300">
-                  <div className="px-6 py-3 rounded-full border-2 border-amber-100 bg-white/90 backdrop-blur shadow-lg shadow-amber-50 flex items-center gap-3 font-bold text-sm text-amber-900">
-                    <Info size={18} className="text-amber-500" />
-                    <span className="font-jua text-lg pt-0.5">{editMode === 'position' ? '책상을 드래그하여 자리를 옮겨보세요.' : '모둠 번호를 선택하고 책상을 콕콕 눌러주세요.'}</span>
+                <div className="absolute top-4 lg:top-8 z-20 animate-in slide-in-from-top duration-300 w-full flex justify-center px-4">
+                  <div className="px-4 lg:px-6 py-2 lg:py-3 rounded-full border-2 border-amber-100 bg-white/90 backdrop-blur shadow-lg shadow-amber-50 flex items-center gap-2 lg:gap-3 font-bold text-sm text-amber-900 max-w-full">
+                    <Info className="text-amber-500 flex-shrink-0 w-4 h-4 lg:w-[18px] lg:h-[18px]" />
+                    <span className="font-jua text-sm lg:text-lg pt-0.5 truncate">{editMode === 'position' ? '책상을 드래그하여 옮겨보세요.' : '번호 선택 후 책상을 누르세요.'}</span>
                   </div>
                 </div>
               )}
 
               {editMode === 'group' && (
-                <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-50">
-                  <div className="bg-white p-2.5 rounded-[1.5rem] border border-stone-200 shadow-2xl flex items-center gap-3">
-                    <button onClick={() => { audioService.playClick(); setSelectedGroupId(0); }} className={`p-3 rounded-2xl transition-colors ${selectedGroupId === 0 ? 'bg-stone-100 text-stone-600 shadow-inner' : 'text-stone-300 hover:text-stone-500 hover:bg-stone-50'}`}><Eraser size={24} /></button>
-                    <div className="w-0.5 h-8 bg-stone-100"></div>
-                    <div className="flex items-center gap-2 px-1">
+                <div className="absolute bottom-4 lg:bottom-10 left-1/2 -translate-x-1/2 z-50 w-full max-w-[95%] lg:max-w-none flex justify-center">
+                  <div className="bg-white p-2 lg:p-2.5 rounded-[1.5rem] border border-stone-200 shadow-2xl flex items-center gap-2 lg:gap-3 overflow-x-auto max-w-full custom-scrollbar">
+                    <button onClick={() => { audioService.playClick(); setSelectedGroupId(0); }} className={`p-2 lg:p-3 rounded-2xl transition-colors flex-shrink-0 ${selectedGroupId === 0 ? 'bg-stone-100 text-stone-600 shadow-inner' : 'text-stone-300 hover:text-stone-500 hover:bg-stone-50'}`}><Eraser className="w-5 h-5 lg:w-6 lg:h-6" /></button>
+                    <div className="w-0.5 h-6 lg:h-8 bg-stone-100 flex-shrink-0"></div>
+                    <div className="flex items-center gap-1 lg:gap-2 px-1">
                       {[1,2,3,4,5,6,7,8].map(id => (
-                        <button key={id} onClick={() => { audioService.playClick(); setSelectedGroupId(id); }} className={`w-11 h-11 rounded-2xl border-2 transition-all flex items-center justify-center font-black text-lg font-jua ${GROUP_COLORS[id]} ${selectedGroupId === id ? 'ring-4 ring-amber-200 ring-offset-0 scale-110 shadow-lg -translate-y-1 z-10' : 'hover:scale-105 hover:shadow-md'}`}>{id}</button>
+                        <button key={id} onClick={() => { audioService.playClick(); setSelectedGroupId(id); }} className={`w-9 h-9 lg:w-11 lg:h-11 rounded-xl lg:rounded-2xl border-2 transition-all flex items-center justify-center font-black text-base lg:text-lg font-jua flex-shrink-0 ${GROUP_COLORS[id]} ${selectedGroupId === id ? 'ring-2 lg:ring-4 ring-amber-200 ring-offset-0 scale-110 shadow-lg -translate-y-1 z-10' : 'hover:scale-105 hover:shadow-md'}`}>{id}</button>
                       ))}
                     </div>
                   </div>
@@ -724,9 +713,9 @@ const App: React.FC = () => {
                 />
               </div>
             </div>
-          </div>
+          </>
         ) : (
-          <div className="w-full flex flex-col items-center bg-[#fdfbf7] overflow-y-auto custom-scrollbar pt-10 pb-20">
+          <div className="w-full flex flex-col items-center bg-[#fdfbf7] overflow-y-auto custom-scrollbar pt-6 lg:pt-10 pb-20">
             <SettingsView students={editingStudents} onChange={setEditingStudents} />
           </div>
         )}
@@ -757,8 +746,12 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
       if (containerRef.current) {
         const cw = containerRef.current.offsetWidth;
         const ch = containerRef.current.offsetHeight;
-        const gw = cols * 140 + 60;
-        const gh = 250 + ((range.endR - range.startR + 1) * 120);
+        // 여백을 포함한 그리드 전체 크기 추정
+        const gw = cols * 130 + 40; // 120px + gap
+        const rows = range.endR - range.startR + 1;
+        const gh = 200 + (rows * 120); // 칠판 높이 + 좌석 높이
+        
+        // 화면에 꽉 차게 보이되, 너무 작아지지 않도록 조정
         setScale(Math.min(cw / gw, ch / gh, 1.2));
       }
     };
@@ -904,74 +897,74 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
   const femaleCount = students.filter(s => s.gender === 'F').length;
 
   return (
-    <div className="w-full max-w-5xl px-8 flex flex-col gap-8 animate-in fade-in duration-500">
-      <div className="flex items-center justify-between border-2 border-amber-100 rounded-[2.5rem] p-8 bg-white shadow-xl shadow-amber-50/50">
-        <div className="flex items-center gap-6">
-          <div className="bg-amber-50 p-4 rounded-3xl border border-amber-100 text-amber-500"><Users size={32} /></div>
+    <div className="w-full max-w-5xl px-4 lg:px-8 flex flex-col gap-6 lg:gap-8 animate-in fade-in duration-500">
+      <div className="flex flex-col lg:flex-row items-center justify-between border-2 border-amber-100 rounded-[2rem] lg:rounded-[2.5rem] p-6 lg:p-8 bg-white shadow-xl shadow-amber-50/50 gap-6">
+        <div className="flex items-center gap-4 lg:gap-6 w-full lg:w-auto">
+          <div className="bg-amber-50 p-3 lg:p-4 rounded-3xl border border-amber-100 text-amber-500"><Users className="w-6 h-6 lg:w-8 lg:h-8" /></div>
           <div>
-            <h2 className="text-3xl font-black text-stone-800 leading-none mb-2 font-jua">우리 반 명단</h2>
-            <p className="text-stone-500 text-base font-medium">번호 순서대로 이름을 적어주세요. (입력 순서는 자리 배치와 무관합니다.)</p>
+            <h2 className="text-2xl lg:text-3xl font-black text-stone-800 leading-none mb-1 lg:mb-2 font-jua">우리 반 명단</h2>
+            <p className="text-stone-500 text-xs lg:text-base font-medium">번호 순서대로 이름을 적어주세요.</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-8">
-          <div className="flex items-center gap-4 text-sm font-bold">
-            <div className="flex items-center gap-2 px-5 py-3 bg-stone-50 border border-stone-200 rounded-2xl">
-              <span className="text-blue-500 text-xl font-jua">남</span> <span className="text-stone-900 ml-1 text-xl font-jua">{maleCount}</span>
+        <div className="flex flex-wrap justify-center items-center gap-4 lg:gap-8 w-full lg:w-auto">
+          <div className="flex items-center gap-3 lg:gap-4 text-xs lg:text-sm font-bold">
+            <div className="flex items-center gap-2 px-4 py-2 lg:px-5 lg:py-3 bg-stone-50 border border-stone-200 rounded-2xl">
+              <span className="text-blue-500 text-lg lg:text-xl font-jua">남</span> <span className="text-stone-900 ml-1 text-lg lg:text-xl font-jua">{maleCount}</span>
             </div>
-            <div className="flex items-center gap-2 px-5 py-3 bg-stone-50 border border-stone-200 rounded-2xl">
-              <span className="text-rose-500 text-xl font-jua">여</span> <span className="text-stone-900 ml-1 text-xl font-jua">{femaleCount}</span>
+            <div className="flex items-center gap-2 px-4 py-2 lg:px-5 lg:py-3 bg-stone-50 border border-stone-200 rounded-2xl">
+              <span className="text-rose-500 text-lg lg:text-xl font-jua">여</span> <span className="text-stone-900 ml-1 text-lg lg:text-xl font-jua">{femaleCount}</span>
             </div>
           </div>
           
-          <div className="flex items-center gap-4 bg-white px-6 py-3 rounded-2xl border-2 border-stone-200 shadow-sm">
-            <span className="text-xs font-black text-stone-400 uppercase tracking-tighter">총 인원</span>
+          <div className="flex items-center gap-3 lg:gap-4 bg-white px-4 py-2 lg:px-6 lg:py-3 rounded-2xl border-2 border-stone-200 shadow-sm ml-auto">
+            <span className="text-[10px] lg:text-xs font-black text-stone-400 uppercase tracking-tighter">총 인원</span>
             <input 
               type="number" 
               value={students.length} 
               onChange={(e) => handleCountChange(parseInt(e.target.value) || 0)}
-              className="w-12 text-3xl font-black text-amber-500 bg-transparent text-center outline-none font-jua"
+              className="w-10 lg:w-12 text-2xl lg:text-3xl font-black text-amber-500 bg-transparent text-center outline-none font-jua"
             />
             <div className="flex flex-col gap-1">
-              <button onClick={() => { audioService.playClick(); handleCountChange(students.length + 1); }} className="hover:text-amber-600 text-stone-300 transition-colors"><ChevronUp size={16} strokeWidth={3} /></button>
-              <button onClick={() => { audioService.playClick(); handleCountChange(students.length - 1); }} className="hover:text-rose-600 text-stone-300 transition-colors"><ChevronDown size={16} strokeWidth={3} /></button>
+              <button onClick={() => { audioService.playClick(); handleCountChange(students.length + 1); }} className="hover:text-amber-600 text-stone-300 transition-colors"><ChevronUp className="w-3.5 h-3.5 lg:w-4 lg:h-4" strokeWidth={3} /></button>
+              <button onClick={() => { audioService.playClick(); handleCountChange(students.length - 1); }} className="hover:text-rose-600 text-stone-300 transition-colors"><ChevronDown className="w-3.5 h-3.5 lg:w-4 lg:h-4" strokeWidth={3} /></button>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5 pb-12">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-5 pb-12">
         {students.map((s, i) => (
           <div 
             key={i} 
-            className="flex flex-col gap-3 p-5 rounded-3xl border-2 border-stone-100 bg-white hover:border-amber-300 transition-all shadow-sm hover:shadow-[0_8px_16px_-4px_rgba(245,158,11,0.1)] group relative overflow-hidden"
+            className="flex flex-col gap-2 lg:gap-3 p-4 lg:p-5 rounded-2xl lg:rounded-3xl border-2 border-stone-100 bg-white hover:border-amber-300 transition-all shadow-sm hover:shadow-[0_8px_16px_-4px_rgba(245,158,11,0.1)] group relative overflow-hidden"
           >
             <div className="absolute top-0 left-0 w-full h-1.5 bg-stone-100 group-hover:bg-amber-400 transition-colors"></div>
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="text-sm font-black text-stone-300 w-6 font-jua pt-1">{i + 1}</span>
+            <div className="flex items-center justify-between gap-2 lg:gap-3 pt-2">
+              <div className="flex items-center gap-2 lg:gap-3 flex-1 overflow-hidden">
+                <span className="text-xs lg:text-sm font-black text-stone-300 w-5 lg:w-6 font-jua pt-1 flex-shrink-0">{i + 1}</span>
                 <input 
                   value={s.name} 
                   onChange={e => updateStudent(i, { name: e.target.value })} 
                   onKeyDown={e => handleKeyDown(e, i)}
-                  className="student-name-input w-full bg-transparent border-none text-2xl font-bold text-stone-800 outline-none placeholder-stone-200 font-jua pt-1" 
+                  className="student-name-input w-full bg-transparent border-none text-xl lg:text-2xl font-bold text-stone-800 outline-none placeholder-stone-200 font-jua pt-1 min-w-0" 
                   placeholder="이름"
                 />
               </div>
               <button 
                 onClick={() => { audioService.playClick(); onChange(students.filter((_, idx) => idx !== i)); }} 
-                className="text-stone-200 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"
-              ><Trash2 size={18} /></button>
+                className="text-stone-200 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+              ><Trash2 className="w-4 h-4 lg:w-[18px] lg:h-[18px]" /></button>
             </div>
             
             <div className="flex gap-2 mt-1">
               <button 
                 onClick={() => { audioService.playClick(); updateStudent(i, { gender: 'M' }); }} 
-                className={`flex-1 py-1.5 rounded-xl text-sm font-black transition-all border-2 font-jua ${s.gender === 'M' ? 'bg-blue-50 border-blue-200 text-blue-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
+                className={`flex-1 py-1 lg:py-1.5 rounded-lg lg:rounded-xl text-xs lg:text-sm font-black transition-all border-2 font-jua ${s.gender === 'M' ? 'bg-blue-50 border-blue-200 text-blue-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
               >남</button>
               <button 
                 onClick={() => { audioService.playClick(); updateStudent(i, { gender: 'F' }); }} 
-                className={`flex-1 py-1.5 rounded-xl text-sm font-black transition-all border-2 font-jua ${s.gender === 'F' ? 'bg-rose-50 border-rose-200 text-rose-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
+                className={`flex-1 py-1 lg:py-1.5 rounded-lg lg:rounded-xl text-xs lg:text-sm font-black transition-all border-2 font-jua ${s.gender === 'F' ? 'bg-rose-50 border-rose-200 text-rose-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
               >여</button>
             </div>
           </div>
@@ -979,14 +972,13 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
 
         <button 
           onClick={() => { audioService.playClick(); handleCountChange(students.length + 1); }} 
-          className="flex flex-col items-center justify-center gap-3 min-h-[140px] rounded-3xl border-3 border-dashed border-stone-200 text-stone-400 font-bold hover:bg-stone-50 hover:border-amber-300 hover:text-amber-400 transition-all"
+          className="flex flex-col items-center justify-center gap-2 lg:gap-3 min-h-[120px] lg:min-h-[140px] rounded-2xl lg:rounded-3xl border-3 border-dashed border-stone-200 text-stone-400 font-bold hover:bg-stone-50 hover:border-amber-300 hover:text-amber-400 transition-all"
         >
-          <div className="bg-white p-3 rounded-full shadow-sm"><PlusCircle size={24} /></div>
-          <span className="text-sm font-jua text-lg">친구 추가하기</span>
+          <div className="bg-white p-2 lg:p-3 rounded-full shadow-sm"><PlusCircle className="w-5 h-5 lg:w-6 lg:h-6" /></div>
+          <span className="text-sm font-jua lg:text-lg">친구 추가하기</span>
         </button>
       </div>
       
-      {/* 하단 버튼 제거됨 */}
     </div>
   );
 };
