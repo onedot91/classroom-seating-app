@@ -278,7 +278,7 @@ const App: React.FC = () => {
     try {
       setIsCapturing(true);
       audioService.playCapture();
-      if ('fonts' in document && document.fonts?.ready) {
+      if (!isMobileCapture && 'fonts' in document && document.fonts?.ready) {
         try {
           await document.fonts.ready;
         } catch {
@@ -289,14 +289,16 @@ const App: React.FC = () => {
       const rect = targetElement.getBoundingClientRect();
       const width = Math.max(1, Math.ceil(Math.max(rect.width, targetElement.scrollWidth || 0, targetElement.clientWidth || 0)));
       const height = Math.max(1, Math.ceil(Math.max(rect.height, targetElement.scrollHeight || 0, targetElement.clientHeight || 0)));
-      const pixelRatio = Math.min(2, window.devicePixelRatio || 1.5);
+      const pixelRatio = isMobileCapture
+        ? Math.min(1.25, window.devicePixelRatio || 1)
+        : Math.min(2, window.devicePixelRatio || 1.5);
 
       const baseOptions = {
         backgroundColor: '#fdfbf7',
         pixelRatio,
         width,
         height,
-        cacheBust: true,
+        cacheBust: !isMobileCapture,
         skipAutoScale: false,
         style: {
           animation: 'none',
@@ -310,20 +312,15 @@ const App: React.FC = () => {
       try {
         baseCanvas = await htmlToImage.toCanvas(targetElement, {
           ...baseOptions,
-          skipFonts: false,
+          skipFonts: isMobileCapture,
         });
       } catch {
-        try {
-          baseCanvas = await htmlToImage.toCanvas(
-            targetElement,
-            { ...baseOptions, skipFonts: true }
-          );
-        } catch {
-          baseCanvas = await htmlToImage.toCanvas(
-            targetElement,
-            { ...baseOptions, skipFonts: true, width: undefined, height: undefined }
-          );
-        }
+        baseCanvas = await htmlToImage.toCanvas(targetElement, {
+          ...baseOptions,
+          skipFonts: true,
+          width: undefined,
+          height: undefined,
+        });
       }
 
       let exportCanvas = baseCanvas;
@@ -987,7 +984,7 @@ const App: React.FC = () => {
                   className="flex flex-col lg:flex-row items-center justify-center lg:justify-start gap-1 lg:gap-3 w-full p-2 lg:p-3.5 rounded-xl lg:rounded-2xl bg-stone-50 border border-stone-100 hover:border-amber-200 hover:bg-amber-50/50 transition-all text-stone-600 group"
                 >
                   <div className="bg-white p-1.5 lg:p-2.5 rounded-lg lg:rounded-xl shadow-sm border border-stone-100 group-hover:border-amber-100 group-hover:text-amber-600 transition-colors"><Camera size={18} /></div>
-                  <span className="font-bold text-[10px] lg:text-base font-jua pt-0.5">이미지 캡쳐</span>
+                  <span className="font-bold text-[10px] lg:text-base font-jua pt-0.5">{isCapturing ? '캡쳐 중...' : '이미지 캡쳐'}</span>
                 </button>
                 <button 
                   onClick={triggerSaveModal}
