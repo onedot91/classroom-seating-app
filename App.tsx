@@ -1460,29 +1460,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
     }
   };
 
-  const handleCleanAllNames = () => {
-    onChange(students.map((student, index) => ({
-      ...student,
-      name: (student.name ?? '').trim() || `학생 ${index + 1}`,
-    })));
-  };
-
-  const handleShuffleNames = () => {
-    const next = [...students];
-    for (let i = next.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [next[i], next[j]] = [next[j], next[i]];
-    }
-    onChange(next);
-  };
-
-  const handleResetNames = () => {
-    onChange(students.map((student, i) => ({
-      ...student,
-      name: `학생 ${i + 1}`,
-    })));
-  };
-
   const maleCount = students.filter(s => s.gender === 'M').length;
   const femaleCount = students.filter(s => s.gender === 'F').length;
 
@@ -1569,35 +1546,6 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
         </button>
       </div>
 
-      <section className="w-full max-w-5xl px-4 lg:px-8 py-6 border-2 border-amber-100 rounded-[2rem] bg-white shadow-xl shadow-amber-50/50">
-        <div className="flex items-center justify-between gap-4 lg:gap-6 mb-5">
-          <div>
-            <h3 className="text-xl lg:text-2xl font-black text-stone-800 font-jua">명단 관리 도구</h3>
-            <p className="text-stone-500 text-sm lg:text-base font-medium mt-1">명단을 한 번에 처리하는 추가 기능들입니다.</p>
-          </div>
-        </div>
-        <div className="flex flex-col sm:flex-row gap-3">
-          <button
-            onClick={handleCleanAllNames}
-            className="flex-1 px-4 py-3 rounded-2xl border-2 border-stone-200 bg-stone-50 hover:bg-amber-50 hover:border-amber-300 font-black text-stone-700 hover:text-amber-500 transition-all font-jua"
-          >
-            이름 양끝 공백 제거
-          </button>
-          <button
-            onClick={handleShuffleNames}
-            className="flex-1 px-4 py-3 rounded-2xl border-2 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-300 text-emerald-700 font-black transition-all font-jua"
-          >
-            학생 이름 섞기
-          </button>
-          <button
-            onClick={handleResetNames}
-            className="flex-1 px-4 py-3 rounded-2xl border-2 border-rose-200 bg-rose-50 hover:bg-rose-100 hover:border-rose-300 text-rose-700 font-black transition-all font-jua"
-          >
-            이름 기본 형식으로 재설정
-          </button>
-        </div>
-      </section>
-      
     </div>
   );
 };
