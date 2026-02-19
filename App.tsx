@@ -268,6 +268,9 @@ const App: React.FC = () => {
     if (!targetElement) return;
 
     const isMobileCapture = isCoarsePointerDevice || window.innerWidth < 1024;
+    const isIOS =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const fileName = `seating_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
     const desktopPaddingX = 56;
     const desktopPaddingY = 34;
@@ -352,9 +355,21 @@ const App: React.FC = () => {
       if (isMobileCapture && nav.share) {
         const file = new File([blob], fileName, { type: 'image/jpeg' });
         if (!nav.canShare || nav.canShare({ files: [file] })) {
-          await nav.share({ files: [file], title: '자리 배치 캡쳐' });
-          return;
+          try {
+            await nav.share({ files: [file], title: '자리 배치 캡쳐' });
+            return;
+          } catch (shareError) {
+            if (shareError instanceof DOMException && shareError.name === 'AbortError') return;
+            console.warn('Share failed, falling back to local preview/download.', shareError);
+          }
         }
+      }
+
+      if (isMobileCapture && isIOS) {
+        const fallbackDataUrl = exportCanvas.toDataURL('image/jpeg', quality);
+        setExpandedImage(fallbackDataUrl);
+        alert('iPhone Safari에서는 이미지 길게 누른 뒤 "사진 앱에 저장"을 선택해 주세요.');
+        return;
       }
 
       const link = document.createElement('a');
