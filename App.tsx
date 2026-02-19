@@ -1055,6 +1055,7 @@ const App: React.FC = () => {
                   editMode={editMode}
                   onSeatClick={handleSeatInteraction}
                   isShuffling={isShuffling}
+                  isCapturing={isCapturing}
                   shufflingOffsets={shufflingOffsets}
                   onMove={handleSeatMove}
                   selectedSeat={selectedSeat}
@@ -1078,12 +1079,13 @@ interface LayoutViewProps {
   editMode: EditModeType;
   onSeatClick: (r: number, c: number) => void;
   isShuffling: boolean;
+  isCapturing: boolean;
   shufflingOffsets: Record<string, { x: number, y: number }>;
   onMove: (from: {r: number, c: number}, to: {r: number, c: number}) => void;
   selectedSeat: {r: number, c: number} | null;
 }
 
-const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatClick, isShuffling, shufflingOffsets, onMove, selectedSeat }) => {
+const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatClick, isShuffling, isCapturing, shufflingOffsets, onMove, selectedSeat }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [dragOverPos, setDragOverPos] = useState<string | null>(null);
@@ -1280,12 +1282,12 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
         <div className="capture-target inline-flex flex-col items-center">
         {/* 칠판 영역 */}
         <div className={`w-full max-w-[500px] mb-14 flex flex-col items-center transition-opacity ${isShuffling ? 'opacity-20' : ''}`}>
-          <div className="w-full h-28 rounded-xl border-[8px] border-[#8b5a2b] shadow-2xl flex items-center justify-center relative chalkboard-texture overflow-hidden">
+          <div className={`w-full h-28 rounded-xl border-[8px] border-[#8b5a2b] flex items-center justify-center relative chalkboard-texture overflow-hidden ${isCapturing ? 'shadow-md' : 'shadow-2xl'}`}>
              {/* 분필 가루 효과 */}
-             <div className="absolute top-1/2 left-1/4 w-32 h-20 bg-white/5 blur-xl rounded-full rotate-12"></div>
+             <div className={`absolute top-1/2 left-1/4 w-32 h-20 bg-white/5 rounded-full rotate-12 ${isCapturing ? '' : 'blur-xl'}`}></div>
              <div className="absolute inset-x-0 -bottom-3 h-3 bg-[#6d4520] rounded-b-lg shadow-md mx-1"></div>
-             <span className="text-white/90 text-4xl font-jua tracking-[0.3em] ml-[0.3em] select-none drop-shadow-md">칠 판</span>
-             <div className="absolute bottom-2 right-4 w-12 h-3 bg-stone-200/20 rounded-sm rotate-1 backdrop-blur-[1px]"></div>
+             <span className={`text-white/90 text-4xl tracking-[0.3em] ml-[0.3em] select-none drop-shadow-md whitespace-nowrap leading-none ${isCapturing ? 'font-["Noto_Sans_KR"]' : 'font-jua'}`}>칠판</span>
+             <div className={`absolute bottom-2 right-4 w-12 h-3 bg-stone-200/20 rounded-sm rotate-1 ${isCapturing ? '' : 'backdrop-blur-[1px]'}`}></div>
           </div>
         </div>
 
@@ -1380,7 +1382,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                 {seat.isActive && seat.student && (
                   <>
                     {/* 책상 디자인 (나무 질감) */}
-                    <div className={`w-full h-full bg-[#f3d09a] rounded-lg shadow-[0_6px_0_#d6b076,0_15px_20px_-5px_rgba(0,0,0,0.15)] border-t-2 border-[#ffe4b5] relative overflow-hidden flex flex-col items-center justify-center p-2 group transition-transform
+                    <div className={`w-full h-full bg-[#f3d09a] rounded-lg border-t-2 border-[#ffe4b5] relative overflow-hidden flex flex-col items-center justify-center p-2 group transition-transform ${isCapturing ? 'shadow-sm' : 'shadow-[0_6px_0_#d6b076,0_15px_20px_-5px_rgba(0,0,0,0.15)]'}
                       ${GROUP_COLORS[seat.groupId]}
                       ${isOver ? 'ring-4 ring-amber-400 ring-offset-2' : ''}
                     `}>
@@ -1398,7 +1400,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                               </div>
                             )}
 
-                            <span className="font-jua text-stone-800 text-2xl truncate w-full text-center px-1 leading-none mt-1.5 tracking-tight">{seat.student.name}</span>
+                            <span className={`${isCapturing ? 'font-["Noto_Sans_KR"]' : 'font-jua'} text-stone-800 text-2xl truncate w-full text-center px-1 leading-none mt-1.5 tracking-tight`}>{seat.student.name}</span>
                         </div>
                     </div>
                   </>
