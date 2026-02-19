@@ -281,9 +281,13 @@ const App: React.FC = () => {
     try {
       setIsCapturing(true);
       audioService.playCapture();
-      if (!isMobileCapture && 'fonts' in document && document.fonts?.ready) {
+      if ('fonts' in document && document.fonts?.ready) {
         try {
-          await document.fonts.ready;
+          const fontsReadyTask = document.fonts.ready;
+          const fontsTimeoutTask = new Promise<void>((resolve) => {
+            window.setTimeout(resolve, isMobileCapture ? 1800 : 3000);
+          });
+          await Promise.race([fontsReadyTask, fontsTimeoutTask]);
         } catch {
         }
       }
@@ -315,7 +319,7 @@ const App: React.FC = () => {
       try {
         baseCanvas = await htmlToImage.toCanvas(targetElement, {
           ...baseOptions,
-          skipFonts: isMobileCapture,
+          skipFonts: false,
         });
       } catch {
         baseCanvas = await htmlToImage.toCanvas(targetElement, {
@@ -1286,7 +1290,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
              {/* 분필 가루 효과 */}
              <div className={`absolute top-1/2 left-1/4 w-32 h-20 bg-white/5 rounded-full rotate-12 ${isCapturing ? '' : 'blur-xl'}`}></div>
              <div className="absolute inset-x-0 -bottom-3 h-3 bg-[#6d4520] rounded-b-lg shadow-md mx-1"></div>
-             <span className={`text-white/90 text-4xl tracking-[0.3em] ml-[0.3em] select-none drop-shadow-md whitespace-nowrap leading-none ${isCapturing ? 'font-["Noto_Sans_KR"]' : 'font-jua'}`}>칠판</span>
+             <span className="text-white/90 text-4xl tracking-[0.3em] ml-[0.3em] select-none drop-shadow-md whitespace-nowrap leading-none font-jua">칠판</span>
              <div className={`absolute bottom-2 right-4 w-12 h-3 bg-stone-200/20 rounded-sm rotate-1 ${isCapturing ? '' : 'backdrop-blur-[1px]'}`}></div>
           </div>
         </div>
@@ -1382,7 +1386,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                 {seat.isActive && seat.student && (
                   <>
                     {/* 책상 디자인 (나무 질감) */}
-                    <div className={`w-full h-full bg-[#f3d09a] rounded-lg border-t-2 border-[#ffe4b5] relative overflow-hidden flex flex-col items-center justify-center p-2 group transition-transform ${isCapturing ? 'shadow-sm' : 'shadow-[0_6px_0_#d6b076,0_15px_20px_-5px_rgba(0,0,0,0.15)]'}
+                    <div className={`w-full h-full bg-[#f3d09a] rounded-lg border-t-2 border-[#ffe4b5] relative overflow-hidden flex flex-col items-center justify-center p-2 group transition-transform shadow-[0_6px_0_#d6b076,0_15px_20px_-5px_rgba(0,0,0,0.15)]
                       ${GROUP_COLORS[seat.groupId]}
                       ${isOver ? 'ring-4 ring-amber-400 ring-offset-2' : ''}
                     `}>
@@ -1400,7 +1404,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                               </div>
                             )}
 
-                            <span className={`${isCapturing ? 'font-["Noto_Sans_KR"]' : 'font-jua'} text-stone-800 text-2xl truncate w-full text-center px-1 leading-none mt-1.5 tracking-tight`}>{seat.student.name}</span>
+                            <span className="font-jua text-stone-800 text-2xl truncate w-full text-center px-1 leading-none mt-1.5 tracking-tight">{seat.student.name}</span>
                         </div>
                     </div>
                   </>
