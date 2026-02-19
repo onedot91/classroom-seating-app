@@ -11,13 +11,13 @@ const DEFAULT_STUDENTS: Student[] = Array.from({ length: 22 }, (_, i) => ({
 
 const GROUP_COLORS = [
   'bg-white border-stone-200', 
-  'bg-rose-50 border-rose-200',
-  'bg-blue-50 border-blue-200',
-  'bg-emerald-50 border-emerald-200',
-  'bg-amber-50 border-amber-200',
-  'bg-violet-50 border-violet-200',
+  'bg-rose-50 border-rose-400',
+  'bg-blue-50 border-blue-400',
+  'bg-emerald-50 border-emerald-400',
+  'bg-amber-50 border-amber-400',
+  'bg-violet-50 border-violet-400',
+  'bg-orange-50 border-orange-400',
   'bg-cyan-50 border-cyan-200',
-  'bg-orange-50 border-orange-200',
   'bg-indigo-50 border-indigo-200',
 ];
 
@@ -28,15 +28,28 @@ const GROUP_BADGE_COLORS = [
   'bg-emerald-500',
   'bg-amber-500',
   'bg-violet-500',
-  'bg-cyan-500',
   'bg-orange-500',
+  'bg-cyan-500',
   'bg-indigo-500',
+];
+
+const GROUP_AREA_COLORS = [
+  '#e7e5e4',
+  '#fecdd3',
+  '#bfdbfe',
+  '#a7f3d0',
+  '#fde68a',
+  '#ddd6fe',
+  '#fdba74',
+  '#67e8f9',
+  '#c7d2fe',
 ];
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('layout');
   const [editMode, setEditMode] = useState<EditModeType>('none');
   const [selectedGroupId, setSelectedGroupId] = useState<number>(1);
+  const [selectedPairSeat, setSelectedPairSeat] = useState<{r: number, c: number} | null>(null);
   const [isShuffling, setIsShuffling] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [showCelebration, setShowCelebration] = useState(false);
@@ -63,17 +76,30 @@ const App: React.FC = () => {
     const saved = localStorage.getItem(STORAGE_KEY);
     return saved ? JSON.parse(saved) : [];
   });
+
+  const normalizeConfig = (raw: Partial<ClassroomConfig>): ClassroomConfig => {
+    const cols = 6;
+    const students = raw.students && raw.students.length > 0 ? raw.students : DEFAULT_STUDENTS;
+    const positions = raw.positions && raw.positions.length > 0
+      ? raw.positions
+      : students.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
+
+    return {
+      students,
+      positions,
+      groupMap: raw.groupMap || {},
+      pairMap: raw.pairMap || {},
+    };
+  };
   
   const [config, setConfig] = useState<ClassroomConfig>(() => {
     const saved = localStorage.getItem(CONFIG_KEY);
     if (saved) { 
       try { 
-        return JSON.parse(saved) as ClassroomConfig; 
+        return normalizeConfig(JSON.parse(saved) as Partial<ClassroomConfig>);
       } catch (e) { console.error(e); } 
     }
-    const cols = 6;
-    const positions = DEFAULT_STUDENTS.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
-    return { students: DEFAULT_STUDENTS, positions, groupMap: {} };
+    return normalizeConfig({});
   });
   
   const [displayStudents, setDisplayStudents] = useState<Student[]>(config.students);
@@ -117,6 +143,7 @@ const App: React.FC = () => {
   // 편집 모드가 바뀌면 선택된 좌석 초기화
   useEffect(() => {
     setSelectedSeat(null);
+    setSelectedPairSeat(null);
   }, [editMode]);
 
   const stopAllTimers = () => {
@@ -400,8 +427,9 @@ const App: React.FC = () => {
       setHistory(prev => prev.filter(i => i.id !== item.id));
       audioService.playClick();
     } else {
-      setConfig(item.config);
-      setDisplayStudents(item.config.students);
+      const restoredConfig = normalizeConfig(item.config);
+      setConfig(restoredConfig);
+      setDisplayStudents(restoredConfig.students);
       setIsHistoryOpen(false);
       audioService.playSuccess();
     }
@@ -418,6 +446,69 @@ const App: React.FC = () => {
           else newGroupMap[key] = selectedGroupId;
           return { ...prev, groupMap: newGroupMap };
         });
+    } else if (editMode === 'pair') {
+        const key = `${r},${c}`;
+
+        if (config.pairMap[key] !== undefined) {
+          setConfig(prev => {
+            const newPairMap = { ...prev.pairMap };
+            const pairId = newPairMap[key];
+            if (pairId !== undefined) {
+              Object.keys(newPairMap).forEach((k) => {
+                if (newPairMap[k] === pairId) delete newPairMap[k];
+              });
+            }
+            return { ...prev, pairMap: newPairMap };
+          });
+          setSelectedPairSeat(null);
+          audioService.playClick();
+          return;
+        }
+
+        if (!selectedPairSeat) {
+          setSelectedPairSeat({ r, c });
+          audioService.playClick();
+          return;
+        }
+
+        if (selectedPairSeat.r === r && selectedPairSeat.c === c) {
+          setSelectedPairSeat(null);
+          audioService.playClick();
+          return;
+        }
+
+        if (Math.abs(selectedPairSeat.r - r) + Math.abs(selectedPairSeat.c - c) !== 1) {
+          alert('짝은 좌우 또는 상하로만 지정할 수 있어요.');
+          return;
+        }
+
+        const fromKey = `${selectedPairSeat.r},${selectedPairSeat.c}`;
+        const toKey = key;
+
+        setConfig(prev => {
+          const newPairMap = { ...prev.pairMap };
+
+          const clearPair = (target: string, map: Record<string, number>) => {
+            const pairId = map[target];
+            if (pairId === undefined) return;
+            Object.keys(map).forEach((k) => {
+              if (map[k] === pairId) delete map[k];
+            });
+          };
+
+          clearPair(fromKey, newPairMap);
+          clearPair(toKey, newPairMap);
+
+          const pairValues = Object.values(newPairMap);
+          const nextPairId = pairValues.length > 0 ? Math.max(...pairValues) + 1 : 1;
+
+          newPairMap[fromKey] = nextPairId;
+          newPairMap[toKey] = nextPairId;
+          return { ...prev, pairMap: newPairMap };
+        });
+
+        setSelectedPairSeat(null);
+        audioService.playClick();
     } else if (editMode === 'position') {
         // Touch & Drop Logic
         if (selectedSeat) {
@@ -456,6 +547,7 @@ const App: React.FC = () => {
 
       // 모둠 속성 이동
       const newGroupMap = { ...prev.groupMap };
+      const newPairMap = { ...prev.pairMap };
       const fromKey = `${from.r},${from.c}`;
       const toKey = `${to.r},${to.c}`;
 
@@ -474,7 +566,22 @@ const App: React.FC = () => {
         delete newGroupMap[fromKey];
       }
 
-      return { ...prev, positions: newPositions, groupMap: newGroupMap };
+      const fromPair = newPairMap[fromKey];
+      const toPair = newPairMap[toKey];
+
+      if (fromPair !== undefined) {
+        newPairMap[toKey] = fromPair;
+      } else {
+        delete newPairMap[toKey];
+      }
+
+      if (toPair !== undefined) {
+        newPairMap[fromKey] = toPair;
+      } else {
+        delete newPairMap[fromKey];
+      }
+
+      return { ...prev, positions: newPositions, groupMap: newGroupMap, pairMap: newPairMap };
     });
   };
 
@@ -498,8 +605,9 @@ const App: React.FC = () => {
         : newStudents.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
       
       const groupMap = newStudents.length === prev.students.length ? prev.groupMap : {};
+      const pairMap = newStudents.length === prev.students.length ? prev.pairMap : {};
 
-      return { students: newStudents, positions, groupMap };
+      return { students: newStudents, positions, groupMap, pairMap };
     });
     setEditMode('none');
     setView('layout');
@@ -527,11 +635,18 @@ const App: React.FC = () => {
       for (let c = visibleRange.startC; c <= visibleRange.endC; c++) {
         const studentIdx = config.positions.findIndex(p => p.r === r && p.c === c);
         const isActive = studentIdx !== -1;
-        result.push({ r, c, isActive, student: isActive ? displayStudents[studentIdx] : null, groupId: config.groupMap[`${r},${c}`] || 0 });
+        result.push({
+          r,
+          c,
+          isActive,
+          student: isActive ? displayStudents[studentIdx] : null,
+          groupId: config.groupMap[`${r},${c}`] || 0,
+          pairId: config.pairMap[`${r},${c}`] || 0
+        });
       }
     }
     return result;
-  }, [visibleRange, config.positions, displayStudents, config.groupMap]);
+  }, [visibleRange, config.positions, displayStudents, config.groupMap, config.pairMap]);
 
   return (
     <div className="h-[100dvh] w-full flex flex-col bg-[#fdfbf7] text-stone-800 relative overflow-hidden font-['Noto_Sans_KR']">
@@ -785,6 +900,13 @@ const App: React.FC = () => {
                 <span className="font-jua text-sm lg:text-base pt-0.5 hidden sm:inline">이동</span>
               </button>
               <button 
+                onClick={() => { audioService.playClick(); setEditMode(editMode === 'pair' ? 'none' : 'pair'); }} 
+                className={`flex items-center gap-2 px-3 py-1.5 lg:px-4 lg:py-2 rounded-xl text-sm font-bold transition-all ${editMode === 'pair' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-black/5' : 'text-stone-400 hover:text-stone-600 hover:bg-stone-200/50'}`}
+              >
+                <Users size={16} />
+                <span className="font-jua text-sm lg:text-base pt-0.5 hidden sm:inline">짝</span>
+              </button>
+              <button 
                 onClick={() => { audioService.playClick(); setEditMode(editMode === 'group' ? 'none' : 'group'); }} 
                 className={`flex items-center gap-2 px-3 py-1.5 lg:px-4 lg:py-2 rounded-xl text-sm font-bold transition-all ${editMode === 'group' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-black/5' : 'text-stone-400 hover:text-stone-600 hover:bg-stone-200/50'}`}
               >
@@ -879,7 +1001,9 @@ const App: React.FC = () => {
                     <span className="font-jua text-sm lg:text-lg pt-0.5 truncate">
                         {editMode === 'position' 
                             ? (selectedSeat ? '이동할 빈 자리를 선택하세요.' : '이동할 책상을 선택하세요.') 
-                            : '번호 선택 후 책상을 누르세요.'}
+                            : editMode === 'pair'
+                                ? (selectedPairSeat ? '짝을 지정할 두 번째 책상을 다시 선택하세요.' : '짝을 지정할 첫 번째 책상을 선택하세요.')
+                                : '번호 선택 후 책상을 누르세요.'}
                     </span>
                   </div>
                 </div>
@@ -940,6 +1064,169 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
   const [dragOverPos, setDragOverPos] = useState<string | null>(null);
 
   const cols = range.endC - range.startC + 1;
+  const rows = range.endR - range.startR + 1;
+  const seatWidth = 120;
+  const seatHeight = seatWidth / 1.3;
+  const gapX = 24;
+  const gapY = 40;
+  const gridWidth = cols * seatWidth + Math.max(0, cols - 1) * gapX;
+  const gridHeight = rows * seatHeight + Math.max(0, rows - 1) * gapY;
+  const overlayPad = 28;
+
+  const groupAreas = useMemo(() => {
+    const groupedSeats: Record<number, Array<{ r: number; c: number }>> = {};
+    seats.forEach((seat) => {
+      if (!seat.isActive || !seat.groupId) return;
+      if (!groupedSeats[seat.groupId]) groupedSeats[seat.groupId] = [];
+      groupedSeats[seat.groupId].push({ r: seat.r, c: seat.c });
+    });
+
+    const areas: Array<{ areaId: string; groupId: number; color: string; pathD: string }> = [];
+    const dirs: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+    const keyOf = (p: { r: number; c: number }) => `${p.r},${p.c}`;
+    const parseKey = (key: string) => {
+      const [r, c] = key.split(',').map(Number);
+      return { r, c };
+    };
+
+    const getComponents = (cellSet: Set<string>) => {
+      const visited = new Set<string>();
+      const comps: string[][] = [];
+      cellSet.forEach((start) => {
+        if (visited.has(start)) return;
+        const queue: string[] = [start];
+        visited.add(start);
+        const comp: string[] = [];
+        while (queue.length) {
+          const cur = queue.shift()!;
+          comp.push(cur);
+          const { r, c } = parseKey(cur);
+          dirs.forEach(([dr, dc]) => {
+            const nk = `${r + dr},${c + dc}`;
+            if (cellSet.has(nk) && !visited.has(nk)) {
+              visited.add(nk);
+              queue.push(nk);
+            }
+          });
+        }
+        comps.push(comp);
+      });
+      return comps;
+    };
+
+    const createPath = (cells: Array<{ r: number; c: number }>) => {
+      const edgeSet = new Map<string, [number, number][]>();
+      const edgeKey = (a: [number, number], b: [number, number]) => {
+        if (a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])) return `${a[0]},${a[1]}|${b[0]},${b[1]}`;
+        return `${b[0]},${b[1]}|${a[0]},${a[1]}`;
+      };
+      const addEdge = (a: [number, number], b: [number, number]) => {
+        const k = edgeKey(a, b);
+        const existing = edgeSet.get(k);
+        if (existing) {
+          edgeSet.delete(k);
+          return;
+        }
+        edgeSet.set(k, [a, b]);
+      };
+
+      const toLocal = (r: number, c: number) => [c - range.startC, r - range.startR] as [number, number];
+      const localCellSet = new Set(cells.map((p) => `${p.r},${p.c}`));
+
+      cells.forEach((cell) => {
+        if (!localCellSet.has(`${cell.r},${cell.c}`)) return;
+        const p = toLocal(cell.r, cell.c);
+        const p1: [number, number] = [p[0], p[1]];
+        const p2: [number, number] = [p[0] + 1, p[1]];
+        const p3: [number, number] = [p[0] + 1, p[1] + 1];
+        const p4: [number, number] = [p[0], p[1] + 1];
+        addEdge(p1, p2);
+        addEdge(p2, p3);
+        addEdge(p3, p4);
+        addEdge(p4, p1);
+      });
+
+      if (edgeSet.size === 0) return '';
+
+      const adj = new Map<string, string[]>();
+      edgeSet.forEach(([a, b]) => {
+        const ka = `${a[0]},${a[1]}`;
+        const kb = `${b[0]},${b[1]}`;
+        if (!adj.has(ka)) adj.set(ka, []);
+        if (!adj.has(kb)) adj.set(kb, []);
+        adj.get(ka)!.push(kb);
+        adj.get(kb)!.push(ka);
+      });
+
+      const keyPoints = Array.from(adj.keys());
+      const start = keyPoints.reduce((acc, cur) => {
+        const [ax, ay] = acc.split(',').map(Number);
+        const [cx, cy] = cur.split(',').map(Number);
+        if (cy < ay || (cy === ay && cx < ax)) return cur;
+        return acc;
+      }, keyPoints[0]);
+
+      if (!start) return '';
+
+      const loop: string[] = [];
+      let prev: string | null = null;
+      let current = start;
+      let guard = 0;
+
+      while (guard < 2000) {
+        guard += 1;
+        loop.push(current);
+        const neighbors = adj.get(current) || [];
+        const next = neighbors.find((n) => n !== prev) || neighbors[0];
+        if (!next) break;
+        prev = current;
+        current = next;
+        if (current === start) break;
+      }
+
+      const pts = loop.map((k) => k.split(',').map(Number) as [number, number]);
+      const stepX = seatWidth + gapX;
+      const stepY = seatHeight + gapY;
+      const inset = 0.92;
+      const xs = pts.map((p) => p[0]);
+      const ys = pts.map((p) => p[1]);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+
+      return (
+        pts.map(([x, y], idx) => {
+          const ix = centerX + (x - centerX) * inset;
+          const iy = centerY + (y - centerY) * inset;
+          const px = overlayPad + ix * stepX;
+          const py = overlayPad + iy * stepY;
+          return `${idx === 0 ? 'M' : 'L'} ${px} ${py}`;
+        }).join(' ') + ' Z'
+      );
+    };
+
+    Object.entries(groupedSeats).forEach(([rawGroupId, cells]) => {
+      const g = Number(rawGroupId);
+      const colorIdx = Number.isFinite(g) ? Math.abs(g) % GROUP_AREA_COLORS.length : 0;
+      const groupCellSet = new Set(cells.map(keyOf));
+      const components = getComponents(groupCellSet);
+
+      components.forEach((component, idx) => {
+        areas.push({
+          areaId: `${g}-${idx}-${component.length}`,
+          groupId: g,
+          color: GROUP_AREA_COLORS[colorIdx] || GROUP_AREA_COLORS[0],
+          pathD: createPath(component.map(parseKey)),
+        });
+      });
+    });
+
+    return areas;
+  }, [seats]);
 
   useEffect(() => {
     const updateScale = () => {
@@ -976,13 +1263,52 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
           </div>
         </div>
 
-        <div className="seating-grid grid gap-x-6 gap-y-10 transition-all duration-500" style={{ gridTemplateColumns: `repeat(${cols}, 120px)` }}>
+        <div className="relative">
+          <div className="absolute inset-0 pointer-events-none z-0">
+            <svg
+              width={gridWidth + overlayPad * 2}
+              height={gridHeight + overlayPad * 2}
+              style={{
+                position: 'absolute',
+                left: -overlayPad,
+                top: -overlayPad,
+                overflow: 'visible',
+              }}
+            >
+              {groupAreas.map((area) => (
+                <path
+                  key={`group-${area.areaId}`}
+                  d={area.pathD}
+                  fill={`${area.color}28`}
+                  stroke={`${area.color}9a`}
+                  strokeWidth={8}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  opacity={0.95}
+                />
+              ))}
+            </svg>
+          </div>
+          <div className="seating-grid grid gap-x-6 gap-y-10 transition-all duration-500 relative z-10" style={{ gridTemplateColumns: `repeat(${cols}, 120px)` }}>
           {seats.map((seat) => {
             const posKey = `${seat.r},${seat.c}`;
             const offset = shufflingOffsets[posKey] || { x: 0, y: 0 };
             const isOver = dragOverPos === posKey;
             // 선택된 좌석인지 확인
             const isSelected = selectedSeat?.r === seat.r && selectedSeat?.c === seat.c;
+            const pairPartner = seat.pairId
+              ? seats.find(s => s.pairId === seat.pairId && (s.r !== seat.r || s.c !== seat.c))
+              : null;
+            const pairTranslate = pairPartner && (Math.abs(pairPartner.r - seat.r) + Math.abs(pairPartner.c - seat.c) === 1)
+              ? (() => {
+                  const dx = pairPartner.c - seat.c;
+                  const dy = pairPartner.r - seat.r;
+                  const gapCompensate = 8;
+                  if (Math.abs(dx) === 1) return { x: dx > 0 ? gapCompensate : -gapCompensate, y: 0 };
+                  if (Math.abs(dy) === 1) return { x: 0, y: dy > 0 ? gapCompensate : -gapCompensate };
+                  return { x: 0, y: 0 };
+                })()
+              : { x: 0, y: 0 };
             
             return (
               <div 
@@ -1017,18 +1343,19 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                   ${editMode === 'position' && !seat.isActive ? 'opacity-30 border-2 border-dashed border-stone-400 cursor-pointer hover:border-amber-400 hover:bg-amber-50 rounded-xl' : ''}
                   ${isShuffling && seat.isActive ? 'z-50 will-change-transform' : ''}
                   ${isOver ? 'scale-110 z-50' : ''}
+                  ${seat.pairId ? 'shadow-[0_0_0_1px_rgba(217,119,6,0.2)]' : ''}
                   ${isSelected ? 'scale-110 z-50 ring-4 ring-amber-400 ring-offset-4 rounded-xl shadow-xl' : ''}
                 `}
                 style={isShuffling && seat.isActive ? {
-                  transform: `translate(${offset.x}px, ${offset.y}px) rotate(${(offset.x + offset.y) * 0.08}deg)`,
+                  transform: `translate(${offset.x + pairTranslate.x}px, ${offset.y + pairTranslate.y}px) rotate(${(offset.x + offset.y) * 0.08}deg)`,
                   transition: 'transform 0.4s ease-in-out'
-                } : {}}
+                } : (seat.pairId ? { transform: `translate(${pairTranslate.x}px, ${pairTranslate.y}px)` } : {})}
               >
                 {seat.isActive && seat.student && (
                   <>
                     {/* 책상 디자인 (나무 질감) */}
                     <div className={`w-full h-full bg-[#f3d09a] rounded-lg shadow-[0_6px_0_#d6b076,0_15px_20px_-5px_rgba(0,0,0,0.15)] border-t-2 border-[#ffe4b5] relative overflow-hidden flex flex-col items-center justify-center p-2 group transition-transform
-                      ${GROUP_COLORS[seat.groupId]} ${seat.groupId > 0 ? 'ring-2 ring-opacity-50' : ''}
+                      ${GROUP_COLORS[seat.groupId]}
                       ${isOver ? 'ring-4 ring-amber-400 ring-offset-2' : ''}
                     `}>
                         {/* 나무결 패턴 (CSS) */}
@@ -1044,7 +1371,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                                 {seat.groupId}
                               </div>
                             )}
-                            
+
                             <span className="font-jua text-stone-800 text-2xl truncate w-full text-center px-1 leading-none mt-1.5 tracking-tight">{seat.student.name}</span>
                         </div>
                     </div>
@@ -1053,6 +1380,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
               </div>
             );
           })}
+          </div>
         </div>
       </div>
     </div>
