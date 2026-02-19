@@ -15,6 +15,7 @@ export interface ClassroomConfig {
   students: Student[];
   positions: Position[]; // Coordinates for each student desk
   groupMap: Record<string, number>; // "r,c" -> groupId
+  pairMap: Record<string, number>; // "r,c" -> pairId
 }
 
 export interface HistoryItem {
@@ -26,7 +27,7 @@ export interface HistoryItem {
 }
 
 export type ViewType = 'layout' | 'settings';
-export type EditModeType = 'none' | 'position' | 'group';
+export type EditModeType = 'none' | 'position' | 'group' | 'pair';
 
 export interface Seat {
   r: number;
@@ -34,4 +35,5 @@ export interface Seat {
   student: Student | null;
   isActive: boolean;
   groupId: number;
+  pairId?: number;
 }
