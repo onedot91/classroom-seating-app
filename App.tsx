@@ -286,7 +286,7 @@ const App: React.FC = () => {
       const rect = targetElement.getBoundingClientRect();
       const width = Math.max(1, Math.ceil(Math.max(rect.width, targetElement.scrollWidth || 0, targetElement.clientWidth || 0)));
       const height = Math.max(1, Math.ceil(Math.max(rect.height, targetElement.scrollHeight || 0, targetElement.clientHeight || 0)));
-      const pixelRatio = isMobileCapture ? 1.1 : Math.min(2, window.devicePixelRatio || 1.5);
+      const pixelRatio = Math.min(2, window.devicePixelRatio || 1.5);
 
       const baseOptions = {
         backgroundColor: '#fdfbf7',
@@ -294,16 +294,14 @@ const App: React.FC = () => {
         width,
         height,
         cacheBust: true,
-        skipFonts: isMobileCapture,
         skipAutoScale: false,
         style: {
-          transform: 'none',
           animation: 'none',
           transition: 'none',
           margin: '0',
           padding: '0',
         },
-      } as const;
+      };
 
       let baseCanvas: HTMLCanvasElement;
       try {
@@ -311,7 +309,7 @@ const App: React.FC = () => {
       } catch {
         baseCanvas = await htmlToImage.toCanvas(
           targetElement,
-          { ...baseOptions, skipFonts: false, width: undefined, height: undefined } as typeof baseOptions
+          { ...baseOptions, width: undefined, height: undefined }
         );
       }
 
