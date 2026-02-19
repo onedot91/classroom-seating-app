@@ -235,34 +235,54 @@ const App: React.FC = () => {
 
   const handleCapture = async () => {
     if (!layoutContainerRef.current || isCapturing) return;
+
     const targetElement = (layoutContainerRef.current.querySelector('.layout-content') as HTMLElement | null) ?? layoutContainerRef.current;
+    if (!targetElement) return;
+
     const isMobileCapture = isCoarsePointerDevice || window.innerWidth < 1024;
     const pixelRatio = isMobileCapture ? 1 : Math.min(1.5, window.devicePixelRatio || 1);
-    const rect = targetElement.getBoundingClientRect();
-    const width = Math.max(1, Math.floor(rect.width));
-    const height = Math.max(1, Math.floor(rect.height));
+    const paddingX = isMobileCapture ? 12 : 40;
+    const paddingY = isMobileCapture ? 12 : 28;
     const fileName = `seating_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+    let captureRoot: HTMLDivElement | null = null;
+
     try {
       setIsCapturing(true);
       audioService.playCapture();
+      const clonedLayout = targetElement.cloneNode(true) as HTMLElement;
+      clonedLayout.style.transform = 'none';
+      clonedLayout.style.transition = 'none';
+      clonedLayout.style.animation = 'none';
+      clonedLayout.style.margin = '0';
+
+      captureRoot = document.createElement('div');
+      captureRoot.style.position = 'fixed';
+      captureRoot.style.left = '-100000px';
+      captureRoot.style.top = '0';
+      captureRoot.style.pointerEvents = 'none';
+      captureRoot.style.opacity = '0';
+      captureRoot.style.zIndex = '-1';
+      captureRoot.style.display = 'inline-block';
+      captureRoot.style.background = '#fdfbf7';
+      captureRoot.style.padding = `${paddingY}px ${paddingX}px`;
+      captureRoot.appendChild(clonedLayout);
+      document.body.appendChild(captureRoot);
+      if (!captureRoot) return;
       const options = {
         backgroundColor: '#fdfbf7',
-        width,
-        height,
-        canvasWidth: Math.floor(width * pixelRatio),
-        canvasHeight: Math.floor(height * pixelRatio),
         pixelRatio,
         type: 'image/jpeg',
         quality: isMobileCapture ? 0.82 : 0.9,
         skipFonts: isMobileCapture,
+        skipAutoScale: isMobileCapture,
         style: {
           animation: 'none',
           transition: 'none',
         },
       } as const;
-      let blob = await htmlToImage.toBlob(targetElement, options);
+      let blob = await htmlToImage.toBlob(captureRoot, options);
       if (!blob) {
-        const fallbackDataUrl = await htmlToImage.toJpeg(targetElement, options);
+        const fallbackDataUrl = await htmlToImage.toJpeg(captureRoot, options);
         setExpandedImage(fallbackDataUrl);
         return;
       }
@@ -280,7 +300,6 @@ const App: React.FC = () => {
 
       const link = document.createElement('a');
       const objectUrl = URL.createObjectURL(blob);
-      link.download = `자리배치_${new Date().toLocaleString().replace(/[: ]/g, '_')}.jpg`;
       link.href = objectUrl;
       link.download = fileName;
       link.rel = 'noopener';
@@ -295,6 +314,9 @@ const App: React.FC = () => {
       alert('이미지 캡쳐에 실패했습니다. 다시 시도해 주세요.');
     }
     finally {
+      if (captureRoot && captureRoot.parentNode) {
+        captureRoot.parentNode.removeChild(captureRoot);
+      }
       setIsCapturing(false);
     }
   };
