@@ -305,12 +305,22 @@ const App: React.FC = () => {
 
       let baseCanvas: HTMLCanvasElement;
       try {
-        baseCanvas = await htmlToImage.toCanvas(targetElement, baseOptions);
+        baseCanvas = await htmlToImage.toCanvas(targetElement, {
+          ...baseOptions,
+          skipFonts: false,
+        });
       } catch {
-        baseCanvas = await htmlToImage.toCanvas(
-          targetElement,
-          { ...baseOptions, width: undefined, height: undefined }
-        );
+        try {
+          baseCanvas = await htmlToImage.toCanvas(
+            targetElement,
+            { ...baseOptions, skipFonts: true }
+          );
+        } catch {
+          baseCanvas = await htmlToImage.toCanvas(
+            targetElement,
+            { ...baseOptions, skipFonts: true, width: undefined, height: undefined }
+          );
+        }
       }
 
       let exportCanvas = baseCanvas;
