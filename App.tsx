@@ -236,60 +236,84 @@ const App: React.FC = () => {
   const handleCapture = async () => {
     if (!layoutContainerRef.current || isCapturing) return;
 
-    const targetElement = (layoutContainerRef.current.querySelector('.layout-content') as HTMLElement | null) ?? layoutContainerRef.current;
+    const layoutRoot = layoutContainerRef.current;
+    const targetElement = (layoutRoot.querySelector('.layout-content') as HTMLElement | null) ?? layoutRoot;
     if (!targetElement) return;
 
     const isMobileCapture = isCoarsePointerDevice || window.innerWidth < 1024;
-    const pixelRatio = isMobileCapture ? 1 : Math.min(1.5, window.devicePixelRatio || 1);
-    const paddingX = isMobileCapture ? 12 : 40;
-    const paddingY = isMobileCapture ? 12 : 28;
     const fileName = `seating_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
-    let captureRoot: HTMLDivElement | null = null;
+    const desktopPaddingX = 56;
+    const desktopPaddingY = 34;
 
     try {
       setIsCapturing(true);
       audioService.playCapture();
-      const clonedLayout = targetElement.cloneNode(true) as HTMLElement;
-      clonedLayout.style.transform = 'none';
-      clonedLayout.style.transition = 'none';
-      clonedLayout.style.animation = 'none';
-      clonedLayout.style.margin = '0';
+      if ('fonts' in document && document.fonts?.ready) {
+        try {
+          await document.fonts.ready;
+        } catch {
+        }
+      }
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-      captureRoot = document.createElement('div');
-      captureRoot.style.position = 'fixed';
-      captureRoot.style.left = '-100000px';
-      captureRoot.style.top = '0';
-      captureRoot.style.pointerEvents = 'none';
-      captureRoot.style.opacity = '0';
-      captureRoot.style.zIndex = '-1';
-      captureRoot.style.display = 'inline-block';
-      captureRoot.style.background = '#fdfbf7';
-      captureRoot.style.padding = `${paddingY}px ${paddingX}px`;
-      captureRoot.appendChild(clonedLayout);
-      document.body.appendChild(captureRoot);
-      if (!captureRoot) return;
-      const options = {
+      const rect = targetElement.getBoundingClientRect();
+      const width = Math.max(1, Math.ceil(Math.max(rect.width, targetElement.scrollWidth || 0, targetElement.clientWidth || 0)));
+      const height = Math.max(1, Math.ceil(Math.max(rect.height, targetElement.scrollHeight || 0, targetElement.clientHeight || 0)));
+      const pixelRatio = isMobileCapture ? 1.1 : Math.min(2, window.devicePixelRatio || 1.5);
+
+      const baseOptions = {
         backgroundColor: '#fdfbf7',
         pixelRatio,
-        type: 'image/jpeg',
-        quality: isMobileCapture ? 0.82 : 0.9,
+        width,
+        height,
+        cacheBust: true,
         skipFonts: isMobileCapture,
-        skipAutoScale: isMobileCapture,
+        skipAutoScale: false,
         style: {
+          transform: 'none',
           animation: 'none',
           transition: 'none',
+          margin: '0',
+          padding: '0',
         },
       } as const;
-      let blob = await htmlToImage.toBlob(captureRoot, options);
+
+      let baseCanvas: HTMLCanvasElement;
+      try {
+        baseCanvas = await htmlToImage.toCanvas(targetElement, baseOptions);
+      } catch {
+        baseCanvas = await htmlToImage.toCanvas(
+          targetElement,
+          { ...baseOptions, skipFonts: false, width: undefined, height: undefined } as typeof baseOptions
+        );
+      }
+
+      let exportCanvas = baseCanvas;
+      if (!isMobileCapture) {
+        const paddedCanvas = document.createElement('canvas');
+        paddedCanvas.width = baseCanvas.width + desktopPaddingX * 2 * pixelRatio;
+        paddedCanvas.height = baseCanvas.height + desktopPaddingY * 2 * pixelRatio;
+        const ctx = paddedCanvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#fdfbf7';
+          ctx.fillRect(0, 0, paddedCanvas.width, paddedCanvas.height);
+          ctx.drawImage(baseCanvas, desktopPaddingX * pixelRatio, desktopPaddingY * pixelRatio);
+          exportCanvas = paddedCanvas;
+        }
+      }
+
+      const quality = isMobileCapture ? 0.82 : 0.9;
+      const blob = await new Promise<Blob | null>((resolve) => {
+        exportCanvas.toBlob(resolve, 'image/jpeg', quality);
+      });
+
       if (!blob) {
-        const fallbackDataUrl = await htmlToImage.toJpeg(captureRoot, options);
+        const fallbackDataUrl = exportCanvas.toDataURL('image/jpeg', quality);
         setExpandedImage(fallbackDataUrl);
         return;
       }
-      const nav = navigator as Navigator & {
-        canShare?: (data: { files: File[] }) => boolean;
-      };
 
+      const nav = navigator as Navigator & { canShare?: (data: { files: File[] }) => boolean };
       if (isMobileCapture && nav.share) {
         const file = new File([blob], fileName, { type: 'image/jpeg' });
         if (!nav.canShare || nav.canShare({ files: [file] })) {
@@ -311,16 +335,11 @@ const App: React.FC = () => {
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       console.error(err);
-      alert('이미지 캡쳐에 실패했습니다. 다시 시도해 주세요.');
-    }
-    finally {
-      if (captureRoot && captureRoot.parentNode) {
-        captureRoot.parentNode.removeChild(captureRoot);
-      }
+      alert('이미지 캡처에 실패했습니다. 다시 시도해 주세요.');
+    } finally {
       setIsCapturing(false);
     }
   };
-
   const triggerSaveModal = () => {
     setNewRecordTitle(`${new Date().getMonth() + 1}월 ${new Date().getDate()}일 자리 배치`);
     setIsSaveModalOpen(true);
