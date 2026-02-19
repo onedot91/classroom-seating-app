@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.ts    text
+*.tsx   text
+*.js    text
+*.jsx   text
+*.json  text
+*.md    text
+*.css   text
+*.html  text
+*.svg   text
+
