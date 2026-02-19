@@ -264,7 +264,10 @@ const App: React.FC = () => {
     if (!layoutContainerRef.current || isCapturing) return;
 
     const layoutRoot = layoutContainerRef.current;
-    const targetElement = (layoutRoot.querySelector('.layout-content') as HTMLElement | null) ?? layoutRoot;
+    const targetElement =
+      (layoutRoot.querySelector('.capture-target') as HTMLElement | null) ??
+      (layoutRoot.querySelector('.layout-content') as HTMLElement | null) ??
+      layoutRoot;
     if (!targetElement) return;
 
     const isMobileCapture = isCoarsePointerDevice || window.innerWidth < 1024;
@@ -395,7 +398,9 @@ const App: React.FC = () => {
 
   const handleSaveToHistory = async () => {
     setIsSaveModalOpen(false);
-    const contentElement = layoutContainerRef.current?.querySelector('.layout-content') as HTMLElement;
+    const contentElement =
+      (layoutContainerRef.current?.querySelector('.capture-target') as HTMLElement | null) ??
+      (layoutContainerRef.current?.querySelector('.layout-content') as HTMLElement | null);
     
     if (!contentElement) return;
 
@@ -1272,6 +1277,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
   return (
     <div ref={containerRef} className="w-full h-full relative flex flex-col items-center justify-center">
       <div className="layout-content flex flex-col items-center transition-transform duration-700 ease-out origin-center" style={{ transform: `scale(${scale})` }}>
+        <div className="capture-target inline-flex flex-col items-center">
         {/* 칠판 영역 */}
         <div className={`w-full max-w-[500px] mb-14 flex flex-col items-center transition-opacity ${isShuffling ? 'opacity-20' : ''}`}>
           <div className="w-full h-28 rounded-xl border-[8px] border-[#8b5a2b] shadow-2xl flex items-center justify-center relative chalkboard-texture overflow-hidden">
@@ -1401,6 +1407,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
             );
           })}
           </div>
+        </div>
         </div>
       </div>
     </div>
