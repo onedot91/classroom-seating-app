@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+﻿import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Settings as SettingsIcon, HomeIcon, RefreshCw, Trash2, PlusCircle, Sparkles, Layers, Move, Eraser, Info, Users, ChevronUp, ChevronDown, Camera, Save, History, X, Play, Maximize2, AlertCircle, Type, Smile } from 'lucide-react';
 import { ClassroomConfig, ViewType, Seat, EditModeType, Student, Gender, Position, HistoryItem, StudentSnapshot } from './types';
 import { audioService } from './services/audioService';
@@ -781,13 +781,25 @@ const App: React.FC = () => {
   const handleEnterSettings = () => {
     audioService.playClick();
     setEditingStudents(JSON.parse(JSON.stringify(config.students)));
-    setView('settings');
+    setView('settings-students');
     setEditMode('none');
+  };
+
+  const handleEnterShuffleSettings = () => {
+    audioService.playClick();
+    setView('settings-shuffle');
+    setEditMode('none');
+  };
+
+  const handleExitSettings = () => {
+    setEditMode('none');
+    setView('layout');
   };
 
   const handleSaveAndExitSettings = () => {
     audioService.playSave();
     handleUpdateConfig(editingStudents);
+    handleExitSettings();
   };
 
   const handleUpdateConfig = (newStudents: Student[]) => {
@@ -802,8 +814,6 @@ const App: React.FC = () => {
 
       return { students: newStudents, positions, groupMap, pairMap };
     });
-    setEditMode('none');
-    setView('layout');
   };
 
   const bounds = useMemo(() => {
@@ -1114,11 +1124,18 @@ const App: React.FC = () => {
               onClick={handleEnterSettings} 
               className="flex items-center gap-2 px-3 py-1.5 lg:px-6 lg:py-2.5 rounded-xl lg:rounded-2xl transition-all font-bold text-sm border-2 shadow-sm text-stone-600 hover:bg-stone-50 border-stone-200 bg-white hover:border-stone-300"
             >
-              <SettingsIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5 hidden sm:inline">명단 관리</span>
+              <SettingsIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5 hidden sm:inline">설정</span>
             </button>
           ) : (
             <button 
-              onClick={handleSaveAndExitSettings} 
+              onClick={() => {
+                if (view === 'settings-students') {
+                  handleSaveAndExitSettings();
+                } else {
+                  audioService.playClick();
+                  handleExitSettings();
+                }
+              }}
               className="flex items-center gap-2 px-4 py-2 lg:px-6 lg:py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm bg-amber-500 text-amber-950 border-amber-500 shadow-amber-200 hover:bg-amber-400 active:scale-95 active:shadow-none active:translate-y-0.5"
             >
               <HomeIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5">저장 후 교실로</span>
@@ -1233,7 +1250,38 @@ const App: React.FC = () => {
           </>
         ) : (
           <div className="w-full flex flex-col items-center bg-[#fdfbf7] overflow-y-auto custom-scrollbar pt-6 lg:pt-10 pb-20">
-            <SettingsView students={editingStudents} onChange={setEditingStudents} />
+            <div className="w-full max-w-5xl px-4 lg:px-8 flex flex-col gap-6 lg:gap-8">
+              <div className="w-full border-2 border-amber-100 rounded-[2rem] p-4 lg:p-6 bg-white shadow-xl shadow-amber-50/50">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={handleEnterSettings}
+                    className={`w-full px-4 py-3 lg:py-4 rounded-2xl border-2 font-bold text-sm lg:text-base transition-all ${
+                      view === 'settings-students'
+                        ? 'bg-amber-50 border-amber-300 text-amber-700 shadow-sm'
+                        : 'bg-white border-stone-200 text-stone-500 hover:border-amber-200 hover:text-amber-600'
+                    }`}
+                  >
+                    명단 관리
+                  </button>
+                  <button
+                    onClick={handleEnterShuffleSettings}
+                    className={`w-full px-4 py-3 lg:py-4 rounded-2xl border-2 font-bold text-sm lg:text-base transition-all ${
+                      view === 'settings-shuffle'
+                        ? 'bg-amber-50 border-amber-300 text-amber-700 shadow-sm'
+                        : 'bg-white border-stone-200 text-stone-500 hover:border-amber-200 hover:text-amber-600'
+                    }`}
+                  >
+                    자리 섞기
+                  </button>
+                </div>
+              </div>
+
+              {view === 'settings-students' ? (
+                <SettingsView students={editingStudents} onChange={setEditingStudents} />
+              ) : (
+                <ShuffleSettingsView />
+              )}
+            </div>
           </div>
         )}
       </main>
@@ -1628,6 +1676,87 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
 
   const maleCount = students.filter(s => s.gender === 'M').length;
   const femaleCount = students.filter(s => s.gender === 'F').length;
+  const studentsPerRow = 4;
+  const studentItems = (() => {
+    const nodes: JSX.Element[] = [];
+
+    for (let rowStart = 0; rowStart < students.length; rowStart += studentsPerRow) {
+      const rowItems = students.slice(rowStart, rowStart + studentsPerRow);
+      const isLastRow = rowStart + studentsPerRow >= students.length;
+
+      rowItems.forEach((s, offset) => {
+        const i = rowStart + offset;
+        const hasVerticalDivider = offset < rowItems.length - 1;
+        nodes.push(
+          <div
+            key={`student-${i}`}
+            className={`relative flex flex-col gap-2 lg:gap-3 p-4 lg:p-5 rounded-2xl lg:rounded-3xl border-2 border-stone-100 bg-white hover:border-amber-300 transition-all shadow-sm hover:shadow-[0_8px_16px_-4px_rgba(245,158,11,0.1)] group overflow-hidden ${
+              hasVerticalDivider ? 'pr-4 after:absolute after:top-0 after:bottom-0 after:right-[-0.75rem] after:w-px after:bg-stone-200' : ''
+            }`}
+          >
+            <div className="absolute top-0 left-0 w-full h-1.5 bg-stone-100 group-hover:bg-amber-400 transition-colors"></div>
+            <div className="flex items-center justify-between gap-2 lg:gap-3 pt-2">
+              <div className="flex items-center gap-2 lg:gap-3 flex-1 overflow-hidden">
+                <span className="text-xs lg:text-sm font-black text-stone-300 w-5 lg:w-6 font-jua pt-1 flex-shrink-0">{i + 1}</span>
+                <input
+                  value={s.name}
+                  onChange={e => updateStudent(i, { name: e.target.value })}
+                  onKeyDown={e => handleKeyDown(e, i)}
+                  className="student-name-input w-full bg-transparent border-none text-xl lg:text-2xl font-bold text-stone-800 outline-none placeholder-stone-200 font-jua pt-1 min-w-0"
+                  placeholder="이름"
+                />
+              </div>
+              <button
+                onClick={() => { audioService.playClick(); onChange(students.filter((_, idx) => idx !== i)); }}
+                className="text-stone-200 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
+              >
+                <Trash2 className="w-4 h-4 lg:w-[18px] lg:h-[18px]" />
+              </button>
+            </div>
+
+            <div className="flex gap-2 mt-1">
+              <button
+                onClick={() => { audioService.playClick(); updateStudent(i, { gender: 'M' }); }}
+                className={`flex-1 py-1 lg:py-1.5 rounded-lg lg:rounded-xl text-xs lg:text-sm font-black transition-all border-2 font-jua ${s.gender === 'M' ? 'bg-blue-50 border-blue-200 text-blue-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
+              >
+                남
+              </button>
+              <button
+                onClick={() => { audioService.playClick(); updateStudent(i, { gender: 'F' }); }}
+                className={`flex-1 py-1 lg:py-1.5 rounded-lg lg:rounded-xl text-xs lg:text-sm font-black transition-all border-2 font-jua ${s.gender === 'F' ? 'bg-rose-50 border-rose-200 text-rose-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
+              >
+                여
+              </button>
+            </div>
+          </div>
+        );
+      });
+
+      if (!isLastRow) {
+        nodes.push(
+          <div
+            key={`divider-${rowStart}`}
+            className="col-span-full h-px bg-stone-200 rounded-full"
+          />
+        );
+      }
+    }
+
+    nodes.push(
+      <button
+        key="add-student-btn"
+        onClick={() => { audioService.playClick(); handleCountChange(students.length + 1); }}
+        className="flex flex-col items-center justify-center gap-2 lg:gap-3 min-h-[120px] lg:min-h-[140px] rounded-2xl lg:rounded-3xl border-3 border-dashed border-stone-200 text-stone-400 font-bold hover:bg-stone-50 hover:border-amber-300 hover:text-amber-400 transition-all"
+      >
+        <div className="bg-white p-2 lg:p-3 rounded-full shadow-sm">
+          <PlusCircle className="w-5 h-5 lg:w-6 lg:h-6" />
+        </div>
+        <span className="text-sm font-jua lg:text-lg">학생 추가하기</span>
+      </button>
+    );
+
+    return nodes;
+  })();
 
   return (
     <div className="w-full max-w-5xl px-4 lg:px-8 flex flex-col gap-6 lg:gap-8 animate-in fade-in duration-500">
@@ -1666,54 +1795,34 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-5 pb-12">
-        {students.map((s, i) => (
-          <div 
-            key={i} 
-            className="flex flex-col gap-2 lg:gap-3 p-4 lg:p-5 rounded-2xl lg:rounded-3xl border-2 border-stone-100 bg-white hover:border-amber-300 transition-all shadow-sm hover:shadow-[0_8px_16px_-4px_rgba(245,158,11,0.1)] group relative overflow-hidden"
-          >
-            <div className="absolute top-0 left-0 w-full h-1.5 bg-stone-100 group-hover:bg-amber-400 transition-colors"></div>
-            <div className="flex items-center justify-between gap-2 lg:gap-3 pt-2">
-              <div className="flex items-center gap-2 lg:gap-3 flex-1 overflow-hidden">
-                <span className="text-xs lg:text-sm font-black text-stone-300 w-5 lg:w-6 font-jua pt-1 flex-shrink-0">{i + 1}</span>
-                <input 
-                  value={s.name} 
-                  onChange={e => updateStudent(i, { name: e.target.value })} 
-                  onKeyDown={e => handleKeyDown(e, i)}
-                  className="student-name-input w-full bg-transparent border-none text-xl lg:text-2xl font-bold text-stone-800 outline-none placeholder-stone-200 font-jua pt-1 min-w-0" 
-                  placeholder="이름"
-                />
-              </div>
-              <button 
-                onClick={() => { audioService.playClick(); onChange(students.filter((_, idx) => idx !== i)); }} 
-                className="text-stone-200 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-              ><Trash2 className="w-4 h-4 lg:w-[18px] lg:h-[18px]" /></button>
-            </div>
-            
-            <div className="flex gap-2 mt-1">
-              <button 
-                onClick={() => { audioService.playClick(); updateStudent(i, { gender: 'M' }); }} 
-                className={`flex-1 py-1 lg:py-1.5 rounded-lg lg:rounded-xl text-xs lg:text-sm font-black transition-all border-2 font-jua ${s.gender === 'M' ? 'bg-blue-50 border-blue-200 text-blue-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
-              >남</button>
-              <button 
-                onClick={() => { audioService.playClick(); updateStudent(i, { gender: 'F' }); }} 
-                className={`flex-1 py-1 lg:py-1.5 rounded-lg lg:rounded-xl text-xs lg:text-sm font-black transition-all border-2 font-jua ${s.gender === 'F' ? 'bg-rose-50 border-rose-200 text-rose-500' : 'bg-stone-50 border-stone-100 text-stone-300 hover:border-stone-200'}`}
-              >여</button>
-            </div>
-          </div>
-        ))}
-
-        <button 
-          onClick={() => { audioService.playClick(); handleCountChange(students.length + 1); }} 
-          className="flex flex-col items-center justify-center gap-2 lg:gap-3 min-h-[120px] lg:min-h-[140px] rounded-2xl lg:rounded-3xl border-3 border-dashed border-stone-200 text-stone-400 font-bold hover:bg-stone-50 hover:border-amber-300 hover:text-amber-400 transition-all"
-        >
-          <div className="bg-white p-2 lg:p-3 rounded-full shadow-sm"><PlusCircle className="w-5 h-5 lg:w-6 lg:h-6" /></div>
-          <span className="text-sm font-jua lg:text-lg">친구 추가하기</span>
-        </button>
+      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-4 lg:grid-cols-4 gap-3 lg:gap-5 pb-12">
+        {studentItems}
       </div>
 
     </div>
   );
 };
 
+const ShuffleSettingsView: React.FC = () => {
+  return (
+    <div className="w-full rounded-[2rem] lg:rounded-[2.5rem] border-2 border-stone-100 bg-white shadow-xl shadow-amber-50/50 p-6 lg:p-8 flex flex-col gap-8 animate-in fade-in duration-500">
+      <div className="flex items-center gap-4 lg:gap-6">
+        <div className="bg-amber-50 p-3 lg:p-4 rounded-3xl border border-amber-100 text-amber-500">
+          <Sparkles className="w-6 h-6 lg:w-8 lg:h-8" />
+        </div>
+        <div>
+          <h2 className="text-2xl lg:text-3xl font-black text-stone-800 leading-none mb-1 lg:mb-2 font-jua">자리 섞기 설정</h2>
+          <p className="text-stone-500 text-xs lg:text-base font-medium">자리 섞기 기능의 추가 설정을 정리할 영역입니다.</p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-6 lg:p-7 text-center">
+        <p className="text-stone-500 text-sm lg:text-base">추가 설정 항목은 추후에 이곳에 순차적으로 반영됩니다.</p>
+        <p className="mt-3 text-stone-800 font-bold font-jua">준비 중</p>
+      </div>
+    </div>
+  );
+};
+
 export default App;
+
