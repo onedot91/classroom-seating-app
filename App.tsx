@@ -84,6 +84,7 @@ const App: React.FC = () => {
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [newRecordTitle, setNewRecordTitle] = useState('');
+  const [isResetSettingsConfirmOpen, setIsResetSettingsConfirmOpen] = useState(false);
   
   // SettingsView 상태를 App으로 끌어올림
   const [editingStudents, setEditingStudents] = useState<Student[]>([]);
@@ -1078,6 +1079,17 @@ const App: React.FC = () => {
     handleExitSettings();
   };
 
+  const handleResetAllSettings = () => {
+    setIsResetSettingsConfirmOpen(false);
+    audioService.playClick();
+    setEditingStudents(DEFAULT_STUDENTS.map(student => ({ ...student })));
+    setShuffleSettings({ ...DEFAULT_SHUFFLE_SETTINGS });
+  };
+
+  const handleRequestResetAllSettings = () => {
+    setIsResetSettingsConfirmOpen(true);
+  };
+
   const handleUpdateConfig = (newStudents: Student[]) => {
     setConfig(prev => {
       const cols = 6;
@@ -1554,6 +1566,44 @@ const App: React.FC = () => {
                   onChange={setShuffleSettings}
                 />
               )}
+
+              <button
+                type="button"
+                onClick={handleRequestResetAllSettings}
+                onPointerDown={handleRequestResetAllSettings}
+                onTouchStart={handleRequestResetAllSettings}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 lg:py-4 rounded-2xl border-2 border-rose-200 bg-white text-rose-600 font-black text-sm lg:text-base transition-all hover:bg-rose-50"
+              >
+                전체 설정 초기화
+              </button>
+            </div>
+          </div>
+        )}
+
+        {isResetSettingsConfirmOpen && (
+          <div className="fixed inset-0 z-[260] bg-black/50 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200">
+            <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-2xl max-w-sm w-full mx-4 flex flex-col items-center text-center border-4 border-stone-100">
+              <div className="p-4 rounded-full mb-4 ring-4 bg-rose-100 text-rose-500 ring-rose-50">
+                <Trash2 size={32} />
+              </div>
+              <h3 className="text-2xl font-black text-stone-800 mb-2 font-jua">설정 전체를 초기화할까요?</h3>
+              <p className="text-stone-500 font-medium mb-8 text-sm leading-relaxed">
+                명단과 자리 섞기 설정이 기본값으로 바뀝니다.
+              </p>
+              <div className="flex w-full gap-3">
+                <button
+                  onClick={() => setIsResetSettingsConfirmOpen(false)}
+                  className="flex-1 py-3.5 rounded-xl font-bold text-stone-400 hover:bg-stone-100 transition-colors font-jua text-lg"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleResetAllSettings}
+                  className="flex-1 py-3.5 rounded-xl font-bold shadow-md transition-all active:scale-95 font-jua text-lg bg-rose-500 text-white hover:bg-rose-600 shadow-rose-200"
+                >
+                  초기화
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -2127,18 +2177,16 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
           </div>
           <div>
             <h2 className="text-2xl lg:text-3xl font-black text-stone-800 leading-none mb-1 lg:mb-2 font-jua">자리 섞기 설정</h2>
-            <p className="text-stone-500 text-xs lg:text-base font-medium">성별 균형, 중복 회피, 거리두기 옵션을 선택할 수 있어요.</p>
+            <p className="text-stone-500 text-xs lg:text-base font-medium">자리 섞기 옵션</p>
           </div>
         </div>
       </div>
 
-      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7 flex flex-col gap-4">
-        <h3 className="font-black text-stone-800 text-xl lg:text-2xl font-jua">성별 균형</h3>
-        <p className="text-sm lg:text-base text-stone-500">자리 섞기 시 좌우 짝으로 남녀가 배치되도록 우선 반영합니다.</p>
-        <div className="flex items-center justify-between bg-stone-50 rounded-xl border border-stone-100 p-3 lg:p-4">
+      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7">
+        <div className="flex items-center justify-between gap-4">
           <div>
-            <p className="font-black text-stone-700">성별 균형 on/off</p>
-            <p className="text-xs lg:text-sm text-stone-400">기본은 off 상태</p>
+            <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">성별 균형</h3>
+            <p className="text-xs lg:text-sm text-stone-500">남녀 짝 배치 우선</p>
           </div>
           <button
             onClick={() => onChange({ ...settings, genderBalance: !settings.genderBalance })}
@@ -2149,13 +2197,11 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
         </div>
       </section>
 
-      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7 flex flex-col gap-4">
-        <h3 className="font-black text-stone-800 text-xl lg:text-2xl font-jua">중복 방지</h3>
-        <p className="text-sm lg:text-base text-stone-500">기록실에 저장된 배치와 조합이 중복되지 않도록 피합니다.</p>
-        <div className="flex items-center justify-between bg-stone-50 rounded-xl border border-stone-100 p-3 lg:p-4">
+      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7">
+        <div className="flex items-center justify-between gap-4">
           <div>
-            <p className="font-black text-stone-700">기존 중복 회피 on/off</p>
-            <p className="text-xs lg:text-sm text-stone-400">기본은 on 상태</p>
+            <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">중복 방지</h3>
+            <p className="text-xs lg:text-sm text-stone-500">저장된 배치/짝과 중복 피하기</p>
           </div>
           <button
             onClick={() => onChange({ ...settings, avoidDuplicate: !settings.avoidDuplicate })}
