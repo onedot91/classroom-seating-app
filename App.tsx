@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Settings as SettingsIcon, HomeIcon, RefreshCw, Trash2, PlusCircle, Sparkles, Layers, Move, Eraser, Info, Users, ChevronUp, ChevronDown, Camera, Save, History, X, Play, Maximize2, AlertCircle, Type, Smile } from 'lucide-react';
-import { ClassroomConfig, ViewType, Seat, EditModeType, Student, Gender, Position, HistoryItem } from './types';
+import { ClassroomConfig, ViewType, Seat, EditModeType, Student, Gender, Position, HistoryItem, StudentSnapshot } from './types';
 import { audioService } from './services/audioService';
 import * as htmlToImage from 'html-to-image';
 
@@ -89,6 +89,160 @@ const App: React.FC = () => {
       positions,
       groupMap: raw.groupMap || {},
       pairMap: raw.pairMap || {},
+    };
+  };
+
+  const createStudentSnapshots = (sourceConfig: ClassroomConfig): StudentSnapshot[] => {
+    const seatToStudentIndex = new Map<string, number>(
+      sourceConfig.positions.map((pos, index) => [`${pos.r},${pos.c}`, index])
+    );
+
+    const pairMembersById: Record<number, string[]> = {};
+    Object.entries(sourceConfig.pairMap).forEach(([seatKey, pairId]) => {
+      if (!pairMembersById[pairId]) pairMembersById[pairId] = [];
+      pairMembersById[pairId].push(seatKey);
+    });
+
+    return sourceConfig.students.map((student, index) => {
+      const seat = sourceConfig.positions[index] || { r: 0, c: 0 };
+      const seatKey = `${seat.r},${seat.c}`;
+      const pairId = sourceConfig.pairMap[seatKey];
+      const partnerSeatKey = pairId ? (pairMembersById[pairId] || []).find((key) => key !== seatKey) : undefined;
+      const partnerStudentIndex = partnerSeatKey ? seatToStudentIndex.get(partnerSeatKey) : undefined;
+      const pairPartner = partnerStudentIndex !== undefined ? sourceConfig.students[partnerStudentIndex] : undefined;
+      const pairPartnerSeat = partnerStudentIndex !== undefined ? sourceConfig.positions[partnerStudentIndex] : undefined;
+
+      return {
+        name: student.name,
+        gender: student.gender,
+        seat,
+        pairId,
+        pairPartnerName: pairPartner?.name,
+        pairPartnerSeat,
+      };
+    });
+  };
+
+  const createLayoutSignature = (sourceConfig: ClassroomConfig): string => {
+    const normalizedSeats = sourceConfig.students
+      .map((student, index) => {
+        const seat = sourceConfig.positions[index] || { r: 0, c: 0 };
+        return {
+          name: student.name,
+          gender: student.gender,
+          r: seat.r,
+          c: seat.c,
+        };
+      })
+      .sort((a, b) => {
+        if (a.r !== b.r) return a.r - b.r;
+        if (a.c !== b.c) return a.c - b.c;
+        if (a.name < b.name) return -1;
+        if (a.name > b.name) return 1;
+        return a.gender < b.gender ? -1 : a.gender > b.gender ? 1 : 0;
+      });
+
+    const pairMembersById: Record<number, string[]> = {};
+    Object.entries(sourceConfig.pairMap).forEach(([seatKey, pairId]) => {
+      if (!pairMembersById[pairId]) pairMembersById[pairId] = [];
+      pairMembersById[pairId].push(seatKey);
+    });
+
+    const normalizedPairs = Object.values(pairMembersById)
+      .filter((members) => members.length >= 2)
+      .map((members) => [...members].sort())
+      .sort((a, b) => a.join('|').localeCompare(b.join('|')))
+      .map((members) => members.join(','));
+
+    return JSON.stringify({
+      seats: normalizedSeats,
+      pairs: normalizedPairs,
+      studentCount: sourceConfig.students.length,
+    });
+  };
+
+  const createPairNameSignature = (sourceConfig: ClassroomConfig): string[] => {
+    const seatToStudentName = new Map<string, string>();
+    sourceConfig.students.forEach((student, index) => {
+      const seat = sourceConfig.positions[index] || { r: 0, c: 0 };
+      seatToStudentName.set(`${seat.r},${seat.c}`, student.name);
+    });
+
+    const pairMembersById: Record<number, string[]> = {};
+    Object.entries(sourceConfig.pairMap).forEach(([seatKey, pairId]) => {
+      const studentName = seatToStudentName.get(seatKey);
+      if (!studentName) return;
+      if (!pairMembersById[pairId]) pairMembersById[pairId] = [];
+      pairMembersById[pairId].push(studentName);
+    });
+
+    const pairSignatures: string[] = [];
+    Object.values(pairMembersById).forEach((members) => {
+      for (let i = 0; i < members.length; i += 1) {
+        for (let j = i + 1; j < members.length; j += 1) {
+          pairSignatures.push([members[i], members[j]].sort().join('||'));
+        }
+      }
+    });
+
+    return pairSignatures.sort();
+  };
+
+  const savedLayoutSignatures = useMemo(() => {
+    const set = new Set<string>();
+    history.forEach((item) => {
+      const normalizedItemConfig = normalizeConfig(item.config);
+      set.add(createLayoutSignature(normalizedItemConfig));
+    });
+    return set;
+  }, [history]);
+
+  const savedPairSignatures = useMemo(() => {
+    const set = new Set<string>();
+    history.forEach((item) => {
+      const normalizedItemConfig = normalizeConfig(item.config);
+      createPairNameSignature(normalizedItemConfig).forEach((signature) => {
+        set.add(signature);
+      });
+    });
+    return set;
+  }, [history]);
+
+  const buildNonDuplicateShufflePositions = (
+    baseConfig: ClassroomConfig,
+    maxAttempts = 500
+  ): { positions: Position[]; avoided: boolean } => {
+    let bestFallback: Position[] | null = null;
+    const seen = new Set<string>();
+
+    const isSameLayout = (a: Position[], b: Position[]) => {
+      if (a.length !== b.length) return false;
+      return a.every((pos, i) => pos.r === b[i].r && pos.c === b[i].c);
+    };
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const shuffled = [...baseConfig.positions].sort(() => Math.random() - 0.5);
+      const shuffledSignature = createLayoutSignature({ ...baseConfig, positions: shuffled });
+      const shuffledPairSignatures = createPairNameSignature({ ...baseConfig, positions: shuffled });
+      const hasForbiddenPair = shuffledPairSignatures.some((signature) => savedPairSignatures.has(signature));
+
+      if (isSameLayout(shuffled, baseConfig.positions) || seen.has(shuffledSignature)) {
+        if (!bestFallback) bestFallback = shuffled;
+        continue;
+      }
+
+      seen.add(shuffledSignature);
+
+      if (!savedLayoutSignatures.has(shuffledSignature) && !hasForbiddenPair) {
+        return { positions: shuffled, avoided: true };
+      }
+
+      if (!bestFallback) bestFallback = shuffled;
+    }
+
+    return {
+      positions: bestFallback ?? [...baseConfig.positions].sort(() => Math.random() - 0.5),
+      avoided: false,
     };
   };
   
@@ -193,7 +347,13 @@ const App: React.FC = () => {
       hasFinalized = true;
       shuffleStartLockRef.current = false;
       stopAllTimers();
-      const shuffledPositions = [...currentPositions].sort(() => Math.random() - 0.5);
+      const { positions: shuffledPositions, avoided } = buildNonDuplicateShufflePositions({
+        ...config,
+        positions: currentPositions,
+      });
+      if (!avoided) {
+        alert('기록실 저장 배치의 짝 조합과 중복되어 중복 회피에 실패했습니다.');
+      }
       setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
       setIsShuffling(false);
       setCountdown(null);
@@ -252,7 +412,7 @@ const App: React.FC = () => {
       });
       setShufflingOffsets(newOffsets);
     }, isCoarsePointer ? 520 : 400);
-  }, [config.students, config.positions, isShuffling, countdown, isCoarsePointerDevice]);
+  }, [config.students, config.positions, isShuffling, countdown, isCoarsePointerDevice, savedLayoutSignatures, savedPairSignatures]);
 
   useEffect(() => {
     return () => {
@@ -408,6 +568,12 @@ const App: React.FC = () => {
     
     if (!contentElement) return;
 
+    const baseHistoryItem: Omit<HistoryItem, 'id' | 'date' | 'thumbnail'> = {
+      title: newRecordTitle.trim() || `${new Date().toLocaleDateString()} 배치`,
+      config: JSON.parse(JSON.stringify(config)),
+      studentSnapshots: createStudentSnapshots(config),
+    };
+
     try {
       audioService.playSave();
       
@@ -429,8 +595,7 @@ const App: React.FC = () => {
       const newItem: HistoryItem = {
         id: crypto.randomUUID(),
         date: new Date().toLocaleString(),
-        title: newRecordTitle.trim() || `${new Date().toLocaleDateString()} 배치`,
-        config: JSON.parse(JSON.stringify(config)),
+        ...baseHistoryItem,
         thumbnail,
       };
       setHistory(prev => [newItem, ...prev]);
@@ -440,8 +605,7 @@ const App: React.FC = () => {
       const newItem: HistoryItem = { 
         id: crypto.randomUUID(), 
         date: new Date().toLocaleString(), 
-        title: newRecordTitle.trim() || `${new Date().toLocaleDateString()} 배치`,
-        config: JSON.parse(JSON.stringify(config)) 
+        ...baseHistoryItem, 
       };
       setHistory(prev => [newItem, ...prev]);
       alert('이미지 생성에 실패하여 텍스트 데이터만 저장되었습니다.');
@@ -1337,7 +1501,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
                   const dy = pairPartner.r - seat.r;
                   const pairCompensateX = 8;
                   const targetPairGap = gapX - pairCompensateX * 2;
-                  const pairCompensateY = (gapY - targetPairGap) / 2;
+                  const pairCompensateY = Math.max(0, (gapY - targetPairGap) / 2);
                   if (Math.abs(dx) === 1) return { x: dx > 0 ? pairCompensateX : -pairCompensateX, y: 0 };
                   if (Math.abs(dy) === 1) return { x: 0, y: dy > 0 ? pairCompensateY : -pairCompensateY };
                   return { x: 0, y: 0 };
