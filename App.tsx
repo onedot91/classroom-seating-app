@@ -1335,9 +1335,11 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
               ? (() => {
                   const dx = pairPartner.c - seat.c;
                   const dy = pairPartner.r - seat.r;
-                  const gapCompensate = 8;
-                  if (Math.abs(dx) === 1) return { x: dx > 0 ? gapCompensate : -gapCompensate, y: 0 };
-                  if (Math.abs(dy) === 1) return { x: 0, y: dy > 0 ? gapCompensate : -gapCompensate };
+                  const pairCompensateX = 8;
+                  const targetPairGap = gapX - pairCompensateX * 2;
+                  const pairCompensateY = (gapY - targetPairGap) / 2;
+                  if (Math.abs(dx) === 1) return { x: dx > 0 ? pairCompensateX : -pairCompensateX, y: 0 };
+                  if (Math.abs(dy) === 1) return { x: 0, y: dy > 0 ? pairCompensateY : -pairCompensateY };
                   return { x: 0, y: 0 };
                 })()
               : { x: 0, y: 0 };
