@@ -36,7 +36,7 @@ export interface HistoryItem {
   thumbnail?: string; // Base64 image string for preview
 }
 
-export type ViewType = 'layout' | 'settings';
+export type ViewType = 'layout' | 'settings-students' | 'settings-shuffle';
 export type EditModeType = 'none' | 'position' | 'group' | 'pair';
 
 export interface Seat {
