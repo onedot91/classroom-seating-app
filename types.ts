@@ -18,11 +18,21 @@ export interface ClassroomConfig {
   pairMap: Record<string, number>; // "r,c" -> pairId
 }
 
+export interface StudentSnapshot {
+  name: string;
+  gender: Gender;
+  seat: Position;
+  pairId?: number;
+  pairPartnerName?: string;
+  pairPartnerSeat?: Position;
+}
+
 export interface HistoryItem {
   id: string;
   date: string;
   title?: string; // 기록의 제목 (사용자 입력)
   config: ClassroomConfig;
+  studentSnapshots?: StudentSnapshot[];
   thumbnail?: string; // Base64 image string for preview
 }
 
