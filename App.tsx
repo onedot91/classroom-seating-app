@@ -4,10 +4,29 @@ import { ClassroomConfig, ViewType, Seat, EditModeType, Student, Gender, Positio
 import { audioService } from './services/audioService';
 import * as htmlToImage from 'html-to-image';
 
+type DistanceRule = {
+  id: string;
+  names: string;
+};
+
+type ShuffleSettings = {
+  genderBalance: boolean;
+  avoidDuplicate: boolean;
+  distanceRules: DistanceRule[];
+  distanceThreshold: number;
+};
+
 const DEFAULT_STUDENTS: Student[] = Array.from({ length: 22 }, (_, i) => ({
   name: `학생${i + 1}`,
   gender: 'M'
 }));
+
+const DEFAULT_SHUFFLE_SETTINGS: ShuffleSettings = {
+  genderBalance: false,
+  avoidDuplicate: true,
+  distanceRules: [],
+  distanceThreshold: 3,
+};
 
 const GROUP_COLORS = [
   'bg-white border-stone-200', 
@@ -68,6 +87,30 @@ const App: React.FC = () => {
   
   // SettingsView 상태를 App으로 끌어올림
   const [editingStudents, setEditingStudents] = useState<Student[]>([]);
+  const [shuffleSettings, setShuffleSettings] = useState<ShuffleSettings>(() => {
+    const saved = localStorage.getItem('classroom_shuffle_settings_v1');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as Partial<ShuffleSettings>;
+        const rules = (parsed.distanceRules || []).map(rule => ({
+          id: rule.id || `distance-rule-${Math.random()}`,
+          names: rule.names || '',
+        }));
+        const threshold = Number(parsed.distanceThreshold);
+        return {
+          ...DEFAULT_SHUFFLE_SETTINGS,
+          ...parsed,
+          distanceRules: rules.length > 0
+            ? rules
+            : DEFAULT_SHUFFLE_SETTINGS.distanceRules,
+          distanceThreshold: Number.isFinite(threshold) && threshold > 0 ? threshold : DEFAULT_SHUFFLE_SETTINGS.distanceThreshold,
+        };
+      } catch (e) {
+        return DEFAULT_SHUFFLE_SETTINGS;
+      }
+    }
+    return DEFAULT_SHUFFLE_SETTINGS;
+  });
 
   const STORAGE_KEY = 'classroom_history_v18';
   const CONFIG_KEY = 'classroom_config_v18';
@@ -208,12 +251,214 @@ const App: React.FC = () => {
     return set;
   }, [history]);
 
+  const shuffleArray = <T,>(items: T[]): T[] => [...items].sort(() => Math.random() - 0.5);
+
+  const resolveDistanceGroups = (students: Student[], rules: DistanceRule[]): number[][] => {
+    const nameToIndices = new Map<string, number[]>();
+
+    students.forEach((student, index) => {
+      const key = student.name.trim().toLowerCase();
+      const existing = nameToIndices.get(key) || [];
+      existing.push(index);
+      nameToIndices.set(key, existing);
+    });
+
+    return rules
+      .map(rule => {
+        const indices = new Set<number>();
+        const names = rule.names
+          .split(',')
+          .map(name => name.trim())
+          .filter(Boolean);
+        names.forEach((name) => {
+          const match = nameToIndices.get(name.toLowerCase());
+          if (!match) return;
+          match.forEach((index) => indices.add(index));
+        });
+
+        const group = [...indices].sort((a, b) => a - b);
+        return group.length >= 2 ? group : null;
+      })
+      .filter((group): group is number[] => group !== null);
+  };
+
+  const buildDistancePenalty = (positions: Position[], students: Student[], distanceRules: DistanceRule[], threshold: number) => {
+    const groups = resolveDistanceGroups(students, distanceRules);
+    if (groups.length === 0 || positions.length === 0) return 0;
+
+    let violations = 0;
+    groups.forEach((group) => {
+      for (let i = 0; i < group.length; i += 1) {
+        for (let j = i + 1; j < group.length; j += 1) {
+          const a = group[i];
+          const b = group[j];
+          const seatA = positions[a];
+          const seatB = positions[b];
+          if (!seatA || !seatB) continue;
+          const distance = Math.abs(seatA.r - seatB.r) + Math.abs(seatA.c - seatB.c);
+          if (distance < threshold) violations += 1;
+        }
+      }
+    });
+
+    return violations;
+  };
+
+  const buildGenderBalancedPositions = (baseConfig: ClassroomConfig): Position[] => {
+    const students = baseConfig.students;
+    const seats = shuffleArray(baseConfig.positions);
+    const maleCount = students.filter((student) => student.gender === 'M').length;
+    const femaleCount = students.filter((student) => student.gender === 'F').length;
+    if (seats.length <= 1 || maleCount + femaleCount === 0) return seats;
+
+    const rowSeats: Position[][] = [];
+    const rowMap = new Map<number, Position[]>();
+    [...baseConfig.positions]
+      .sort((a, b) => (a.r !== b.r ? a.r - b.r : a.c - b.c))
+      .forEach((seat) => {
+        const list = rowMap.get(seat.r) || [];
+        list.push(seat);
+        rowMap.set(seat.r, list);
+      });
+
+    [...rowMap.keys()].sort((a, b) => a - b).forEach((row) => {
+      const list = (rowMap.get(row) || []).slice().sort((a, b) => a.c - b.c);
+      rowSeats.push(list);
+    });
+
+    const seatTemplate: Position[] = [];
+    rowSeats.forEach((list) => {
+      for (let i = 0; i < list.length; i += 2) {
+        const left = list[i];
+        const right = list[i + 1];
+        if (!right) {
+          seatTemplate.push(left);
+          continue;
+        }
+        if (Math.random() > 0.5) {
+          seatTemplate.push(left, right);
+        } else {
+          seatTemplate.push(right, left);
+        }
+      }
+    });
+
+    const seatByGenderTarget: Record<'M' | 'F' | 'N', Position[]> = { M: [], F: [], N: [] };
+    const totalGenderSeatCount = maleCount + femaleCount;
+    const genderTargets: Array<'M' | 'F'> = [];
+    let remainMale = maleCount;
+    let remainFemale = femaleCount;
+
+    while (genderTargets.length < totalGenderSeatCount) {
+      const remainSlots = totalGenderSeatCount - genderTargets.length;
+      if (remainSlots === 1) {
+        if (remainMale > 0) genderTargets.push('M');
+        else genderTargets.push('F');
+        if (remainMale > 0) remainMale -= 1;
+        if (remainFemale > 0) remainFemale -= 1;
+        continue;
+      }
+
+      if (remainMale > 0 && remainFemale > 0) {
+        if (Math.random() > 0.5) {
+          genderTargets.push('M', 'F');
+        } else {
+          genderTargets.push('F', 'M');
+        }
+        remainMale -= 1;
+        remainFemale -= 1;
+      } else if (remainMale > 1) {
+        genderTargets.push('M', 'M');
+        remainMale -= 2;
+      } else if (remainFemale > 1) {
+        genderTargets.push('F', 'F');
+        remainFemale -= 2;
+      }
+    }
+
+    for (let i = genderTargets.length; i < seatTemplate.length; i += 1) {
+      seatByGenderTarget.N.push(seatTemplate[i]);
+    }
+    genderTargets.forEach((gender, idx) => {
+      const targetSeat = seatTemplate[idx];
+      if (!targetSeat) return;
+      seatByGenderTarget[gender].push(targetSeat);
+    });
+
+    const seatsByGender = {
+      M: shuffleArray(seatByGenderTarget.M),
+      F: shuffleArray(seatByGenderTarget.F),
+      N: shuffleArray(seatByGenderTarget.N),
+    };
+
+    let mIndex = 0;
+    let fIndex = 0;
+    let nIndex = 0;
+    const pool = shuffleArray([...seatTemplate]);
+    const consume = (seat?: Position): Position | undefined => {
+      if (!seat) return undefined;
+      const poolIndex = pool.findIndex(p => p.r === seat.r && p.c === seat.c);
+      if (poolIndex >= 0) pool.splice(poolIndex, 1);
+      return seat;
+    };
+
+    const nextSeatByGender = (gender: Gender): Position => {
+      if (gender === 'M') return consume(seatsByGender.M[mIndex++]) || consume(pool.shift())!;
+      if (gender === 'F') return consume(seatsByGender.F[fIndex++]) || consume(pool.shift())!;
+      return consume(seatsByGender.N[nIndex++]) || consume(pool.shift())!;
+    };
+
+    return students.map(student => nextSeatByGender(student.gender) || { r: 0, c: 0 });
+  };
+
+  const buildGenderPenalty = (positions: Position[], students: Student[]) => {
+    if (positions.length !== students.length || students.length === 0) return 0;
+
+    const seatToGender = new Map<string, Gender>();
+    students.forEach((student, index) => {
+      const seat = positions[index];
+      if (seat) seatToGender.set(`${seat.r},${seat.c}`, student.gender);
+    });
+
+    let penalty = 0;
+    const rowMap = new Map<number, Position[]>();
+    positions.forEach((seat) => {
+      const list = rowMap.get(seat.r) || [];
+      list.push(seat);
+      rowMap.set(seat.r, list);
+    });
+
+    [...rowMap.keys()].sort((a, b) => a - b).forEach((row) => {
+      const list = (rowMap.get(row) || []).sort((a, b) => a.c - b.c);
+      for (let i = 0; i + 1 < list.length; i += 2) {
+        const leftGender = seatToGender.get(`${list[i].r},${list[i].c}`);
+        const rightGender = seatToGender.get(`${list[i + 1].r},${list[i + 1].c}`);
+        if (leftGender && rightGender && leftGender !== 'N' && rightGender !== 'N' && leftGender === rightGender) {
+          penalty += 1;
+        }
+      }
+    });
+
+    return penalty;
+  };
+
   const buildNonDuplicateShufflePositions = (
     baseConfig: ClassroomConfig,
-    maxAttempts = 500
+    options: {
+      avoidDuplicate: boolean;
+      balanceGender: boolean;
+      distanceRules: DistanceRule[];
+      distanceThreshold: number;
+      maxAttempts?: number;
+    },
   ): { positions: Position[]; avoided: boolean } => {
-    let bestFallback: Position[] | null = null;
+    const maxAttempts = options.maxAttempts || 500;
     const seen = new Set<string>();
+    const shouldTrack = options.avoidDuplicate;
+    let bestFallback: Position[] | null = null;
+    let bestDistancePenalty = Number.MAX_SAFE_INTEGER;
+    let bestHistoryPenalty = Number.MAX_SAFE_INTEGER;
+    let bestGenderPenalty = Number.MAX_SAFE_INTEGER;
 
     const isSameLayout = (a: Position[], b: Position[]) => {
       if (a.length !== b.length) return false;
@@ -221,27 +466,44 @@ const App: React.FC = () => {
     };
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const shuffled = [...baseConfig.positions].sort(() => Math.random() - 0.5);
+      const shuffled = options.balanceGender
+        ? buildGenderBalancedPositions(baseConfig)
+        : shuffleArray(baseConfig.positions);
+
+      if (shouldTrack && seen.has(createLayoutSignature({ ...baseConfig, positions: shuffled }))) continue;
+      if (isSameLayout(shuffled, baseConfig.positions)) continue;
+
       const shuffledSignature = createLayoutSignature({ ...baseConfig, positions: shuffled });
+      if (shouldTrack) seen.add(shuffledSignature);
+
       const shuffledPairSignatures = createPairNameSignature({ ...baseConfig, positions: shuffled });
       const hasForbiddenPair = shuffledPairSignatures.some((signature) => savedPairSignatures.has(signature));
+      const hasForbiddenLayout = savedLayoutSignatures.has(shuffledSignature);
+      const blockedByHistory = shouldTrack && (hasForbiddenPair || hasForbiddenLayout);
+      const historyPenalty = blockedByHistory ? 1 : 0;
+      const currentDistancePenalty = options.distanceRules.length > 0
+        ? buildDistancePenalty(shuffled, baseConfig.students, options.distanceRules, options.distanceThreshold)
+        : 0;
+      const genderPenalty = options.balanceGender ? buildGenderPenalty(shuffled, baseConfig.students) : 0;
 
-      if (isSameLayout(shuffled, baseConfig.positions) || seen.has(shuffledSignature)) {
-        if (!bestFallback) bestFallback = shuffled;
-        continue;
-      }
-
-      seen.add(shuffledSignature);
-
-      if (!savedLayoutSignatures.has(shuffledSignature) && !hasForbiddenPair) {
+      if (currentDistancePenalty === 0 && !blockedByHistory) {
         return { positions: shuffled, avoided: true };
       }
 
-      if (!bestFallback) bestFallback = shuffled;
+      if (bestFallback === null || currentDistancePenalty < bestDistancePenalty || (
+        currentDistancePenalty === bestDistancePenalty && historyPenalty < bestHistoryPenalty
+      ) || (
+        currentDistancePenalty === bestDistancePenalty && historyPenalty === bestHistoryPenalty && genderPenalty < bestGenderPenalty
+      )) {
+        bestFallback = shuffled;
+        bestDistancePenalty = currentDistancePenalty;
+        bestHistoryPenalty = historyPenalty;
+        bestGenderPenalty = genderPenalty;
+      }
     }
 
     return {
-      positions: bestFallback ?? [...baseConfig.positions].sort(() => Math.random() - 0.5),
+      positions: bestFallback ?? shuffleArray(baseConfig.positions),
       avoided: false,
     };
   };
@@ -268,6 +530,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   }, [config]);
+
+  useEffect(() => {
+    localStorage.setItem('classroom_shuffle_settings_v1', JSON.stringify(shuffleSettings));
+  }, [shuffleSettings]);
 
   useEffect(() => {
     try {
@@ -350,9 +616,14 @@ const App: React.FC = () => {
       const { positions: shuffledPositions, avoided } = buildNonDuplicateShufflePositions({
         ...config,
         positions: currentPositions,
+      }, {
+        avoidDuplicate: shuffleSettings.avoidDuplicate,
+        balanceGender: shuffleSettings.genderBalance,
+        distanceRules: shuffleSettings.distanceRules,
+        distanceThreshold: Math.max(1, shuffleSettings.distanceThreshold),
       });
       if (!avoided) {
-        alert('기록실 저장 배치의 짝 조합과 중복되어 중복 회피에 실패했습니다.');
+        alert('자리 섞기 조건(중복 회피/거리두기)을 만족하는 배치가 없어 가장 유사한 배치로 적용했어요.');
       }
       setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
       setIsShuffling(false);
@@ -412,7 +683,7 @@ const App: React.FC = () => {
       });
       setShufflingOffsets(newOffsets);
     }, isCoarsePointer ? 520 : 400);
-  }, [config.students, config.positions, isShuffling, countdown, isCoarsePointerDevice, savedLayoutSignatures, savedPairSignatures]);
+  }, [config.students, config.positions, isShuffling, countdown, isCoarsePointerDevice, savedLayoutSignatures, savedPairSignatures, shuffleSettings]);
 
   useEffect(() => {
     return () => {
@@ -780,13 +1051,18 @@ const App: React.FC = () => {
 
   const handleEnterSettings = () => {
     audioService.playClick();
-    setEditingStudents(JSON.parse(JSON.stringify(config.students)));
+    if (view !== 'settings-students' && view !== 'settings-shuffle') {
+      setEditingStudents(JSON.parse(JSON.stringify(config.students)));
+    }
     setView('settings-students');
     setEditMode('none');
   };
 
   const handleEnterShuffleSettings = () => {
     audioService.playClick();
+    if (view !== 'settings-students' && view !== 'settings-shuffle') {
+      setEditingStudents(JSON.parse(JSON.stringify(config.students)));
+    }
     setView('settings-shuffle');
     setEditMode('none');
   };
@@ -1128,14 +1404,7 @@ const App: React.FC = () => {
             </button>
           ) : (
             <button 
-              onClick={() => {
-                if (view === 'settings-students') {
-                  handleSaveAndExitSettings();
-                } else {
-                  audioService.playClick();
-                  handleExitSettings();
-                }
-              }}
+              onClick={handleSaveAndExitSettings}
               className="flex items-center gap-2 px-4 py-2 lg:px-6 lg:py-2.5 rounded-2xl transition-all font-bold text-sm border-2 shadow-sm bg-amber-500 text-amber-950 border-amber-500 shadow-amber-200 hover:bg-amber-400 active:scale-95 active:shadow-none active:translate-y-0.5"
             >
               <HomeIcon size={18} /> <span className="font-jua text-sm lg:text-lg pt-0.5">저장 후 교실로</span>
@@ -1279,7 +1548,11 @@ const App: React.FC = () => {
               {view === 'settings-students' ? (
                 <SettingsView students={editingStudents} onChange={setEditingStudents} />
               ) : (
-                <ShuffleSettingsView />
+                <ShuffleSettingsView
+                  settings={shuffleSettings}
+                  students={config.students}
+                  onChange={setShuffleSettings}
+                />
               )}
             </div>
           </div>
@@ -1803,23 +2076,151 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
   );
 };
 
-const ShuffleSettingsView: React.FC = () => {
+interface ShuffleSettingsViewProps {
+  settings: ShuffleSettings;
+  students: Student[];
+  onChange: (settings: ShuffleSettings) => void;
+}
+
+const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, onChange }) => {
+  const studentNames = useMemo(() => {
+    const seen = new Set<string>();
+    return students
+      .map(student => student.name)
+      .filter((name) => {
+        const trimmed = name.trim();
+        if (!trimmed || seen.has(trimmed.toLowerCase())) return false;
+        seen.add(trimmed.toLowerCase());
+        return true;
+      });
+  }, [students]);
+
+  const createDistanceRuleId = () => `distance-rule-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+
+  const updateRule = (id: string, names: string) => {
+    onChange({
+      ...settings,
+      distanceRules: settings.distanceRules.map((rule) => (rule.id === id ? { ...rule, names } : rule)),
+    });
+  };
+
+  const removeRule = (id: string) => {
+    onChange({
+      ...settings,
+      distanceRules: settings.distanceRules.filter((rule) => rule.id !== id),
+    });
+  };
+
+  const addDistanceRule = () => {
+    onChange({
+      ...settings,
+      distanceRules: [...settings.distanceRules, { id: createDistanceRuleId(), names: '' }],
+    });
+  };
+
   return (
-    <div className="w-full rounded-[2rem] lg:rounded-[2.5rem] border-2 border-stone-100 bg-white shadow-xl shadow-amber-50/50 p-6 lg:p-8 flex flex-col gap-8 animate-in fade-in duration-500">
-      <div className="flex items-center gap-4 lg:gap-6">
-        <div className="bg-amber-50 p-3 lg:p-4 rounded-3xl border border-amber-100 text-amber-500">
-          <Sparkles className="w-6 h-6 lg:w-8 lg:h-8" />
-        </div>
-        <div>
-          <h2 className="text-2xl lg:text-3xl font-black text-stone-800 leading-none mb-1 lg:mb-2 font-jua">자리 섞기 설정</h2>
-          <p className="text-stone-500 text-xs lg:text-base font-medium">자리 섞기 기능의 추가 설정을 정리할 영역입니다.</p>
+    <div className="w-full max-w-5xl px-4 lg:px-8 pb-16 flex flex-col gap-6 lg:gap-8 animate-in fade-in duration-500">
+      <div className="flex flex-col lg:flex-row items-center justify-between border-2 border-amber-100 rounded-[2rem] lg:rounded-[2.5rem] p-6 lg:p-8 bg-white shadow-xl shadow-amber-50/50 gap-6">
+        <div className="flex items-center gap-4 lg:gap-6 w-full lg:w-auto">
+          <div className="bg-amber-50 p-3 lg:p-4 rounded-3xl border border-amber-100 text-amber-500">
+            <Sparkles className="w-6 h-6 lg:w-8 lg:h-8" />
+          </div>
+          <div>
+            <h2 className="text-2xl lg:text-3xl font-black text-stone-800 leading-none mb-1 lg:mb-2 font-jua">자리 섞기 설정</h2>
+            <p className="text-stone-500 text-xs lg:text-base font-medium">성별 균형, 중복 회피, 거리두기 옵션을 선택할 수 있어요.</p>
+          </div>
         </div>
       </div>
 
-      <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-6 lg:p-7 text-center">
-        <p className="text-stone-500 text-sm lg:text-base">추가 설정 항목은 추후에 이곳에 순차적으로 반영됩니다.</p>
-        <p className="mt-3 text-stone-800 font-bold font-jua">준비 중</p>
-      </div>
+      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7 flex flex-col gap-4">
+        <h3 className="font-black text-stone-800 text-xl lg:text-2xl font-jua">성별 균형</h3>
+        <p className="text-sm lg:text-base text-stone-500">자리 섞기 시 좌우 짝으로 남녀가 배치되도록 우선 반영합니다.</p>
+        <div className="flex items-center justify-between bg-stone-50 rounded-xl border border-stone-100 p-3 lg:p-4">
+          <div>
+            <p className="font-black text-stone-700">성별 균형 on/off</p>
+            <p className="text-xs lg:text-sm text-stone-400">기본은 off 상태</p>
+          </div>
+          <button
+            onClick={() => onChange({ ...settings, genderBalance: !settings.genderBalance })}
+            className={`px-4 lg:px-5 py-2 rounded-xl font-black text-sm lg:text-base transition-all border-2 ${settings.genderBalance ? 'bg-emerald-50 border-emerald-300 text-emerald-600' : 'bg-white border-stone-200 text-stone-500'}`}
+          >
+            {settings.genderBalance ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7 flex flex-col gap-4">
+        <h3 className="font-black text-stone-800 text-xl lg:text-2xl font-jua">중복 방지</h3>
+        <p className="text-sm lg:text-base text-stone-500">기록실에 저장된 배치와 조합이 중복되지 않도록 피합니다.</p>
+        <div className="flex items-center justify-between bg-stone-50 rounded-xl border border-stone-100 p-3 lg:p-4">
+          <div>
+            <p className="font-black text-stone-700">기존 중복 회피 on/off</p>
+            <p className="text-xs lg:text-sm text-stone-400">기본은 on 상태</p>
+          </div>
+          <button
+            onClick={() => onChange({ ...settings, avoidDuplicate: !settings.avoidDuplicate })}
+            className={`px-4 lg:px-5 py-2 rounded-xl font-black text-sm lg:text-base transition-all border-2 ${settings.avoidDuplicate ? 'bg-emerald-50 border-emerald-300 text-emerald-600' : 'bg-white border-stone-200 text-stone-500'}`}
+          >
+            {settings.avoidDuplicate ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7 flex flex-col gap-5">
+        <div className="flex items-start justify-between gap-4 lg:items-center">
+          <div>
+            <h3 className="font-black text-stone-800 text-xl lg:text-2xl font-jua">거리두기</h3>
+            <p className="text-sm lg:text-base text-stone-500">조합으로 지정한 학생들은 서로 멀리 떨어지도록 배치합니다.</p>
+          </div>
+          <button
+            onClick={addDistanceRule}
+            className="px-4 lg:px-5 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-600 font-black text-sm lg:text-base hover:bg-amber-100"
+          >
+            조합 추가
+          </button>
+        </div>
+
+        <div className="flex items-center gap-4 bg-stone-50 border border-stone-100 rounded-xl p-3 lg:p-4">
+          <span className="text-sm lg:text-base font-black text-stone-700">거리 기준(맨해튼)</span>
+          <input
+            type="number"
+            min={2}
+            max={10}
+            value={settings.distanceThreshold}
+            onChange={(e) => onChange({ ...settings, distanceThreshold: Math.max(2, parseInt(e.target.value, 10) || 2) })}
+            className="w-20 lg:w-24 bg-white border-2 border-stone-200 rounded-lg px-3 py-2 text-center font-black text-stone-700"
+          />
+        </div>
+
+        <datalist id="shuffle-settings-student-names">
+          {studentNames.map(name => <option key={name} value={name} />)}
+        </datalist>
+
+        {settings.distanceRules.length === 0 ? (
+          <p className="text-stone-500 text-sm lg:text-base">거리두기 규칙이 없어요. 이름을 입력해 조합을 추가해 주세요.</p>
+        ) : (
+          <div className="space-y-3">
+            {settings.distanceRules.map(rule => (
+              <div key={rule.id} className="grid grid-cols-[1fr_auto] gap-3 items-start">
+                <input
+                  value={rule.names}
+                  onChange={(e) => updateRule(rule.id, e.target.value)}
+                  list="shuffle-settings-student-names"
+                  placeholder="예: 김철수, 이영희, 박민수"
+                  className="w-full border-2 border-stone-200 rounded-xl px-3 lg:px-4 py-3 bg-white font-medium text-stone-700"
+                />
+                <button
+                  onClick={() => removeRule(rule.id)}
+                  className="h-12 lg:h-12 px-4 rounded-xl border-2 border-rose-200 text-rose-500 hover:bg-rose-50"
+                >
+                  <span className="sr-only">규칙 삭제</span>
+                  X
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 };
