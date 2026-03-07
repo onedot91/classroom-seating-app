@@ -4,16 +4,39 @@ import { ClassroomConfig, ViewType, Seat, EditModeType, Student, Gender, Positio
 import { audioService } from './services/audioService';
 import * as htmlToImage from 'html-to-image';
 
-type DistanceRule = {
+type ForbiddenPairRule = {
   id: string;
-  names: string;
+  first: string;
+  second: string;
+};
+
+type StudentGroupRule = {
+  id: string;
+  names: string[];
 };
 
 type ShuffleSettings = {
   genderBalance: boolean;
   avoidDuplicate: boolean;
-  distanceRules: DistanceRule[];
-  distanceThreshold: number;
+  forbiddenPairs: ForbiddenPairRule[];
+  forbiddenGroups: StudentGroupRule[];
+  frontOnly: string[];
+  noBackRow: string[];
+  noSoloSeat: string[];
+};
+
+type ShuffleResultStatus = 'all' | 'history_relaxed' | 'rules_relaxed';
+
+type CompiledShuffleRules = {
+  hasHardRules: boolean;
+  seatIndexByKey: Map<string, number>;
+  adjacencyBySeatIndex: number[][];
+  pairGroupBySeatIndex: Map<number, number>;
+  frontRow: number;
+  backRow: number;
+  allowedSeatIndicesByStudent: number[][];
+  forbiddenPairTargets: Map<number, Set<number>>;
+  forbiddenGroupTargets: Map<number, Set<number>>;
 };
 
 type LayoutPerspective = 'student' | 'teacher';
@@ -27,9 +50,30 @@ const DEFAULT_STUDENTS: Student[] = Array.from({ length: 22 }, (_, i) => ({
 const DEFAULT_SHUFFLE_SETTINGS: ShuffleSettings = {
   genderBalance: false,
   avoidDuplicate: true,
-  distanceRules: [],
-  distanceThreshold: 3,
+  forbiddenPairs: [],
+  forbiddenGroups: [],
+  frontOnly: [],
+  noBackRow: [],
+  noSoloSeat: [],
 };
+
+const normalizeStudentName = (name: string) => name.trim().toLowerCase();
+
+const dedupeStudentNames = (names: string[]) => {
+  const seen = new Set<string>();
+  return names.filter((name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const key = normalizeStudentName(trimmed);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const createRuleId = (prefix: string) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+
+const shuffleArray = <T,>(items: T[]): T[] => [...items].sort(() => Math.random() - 0.5);
 
 const GROUP_COLORS = [
   'bg-white border-stone-200', 
@@ -94,22 +138,36 @@ const App: React.FC = () => {
   // SettingsView 상태를 App으로 끌어올림
   const [editingStudents, setEditingStudents] = useState<Student[]>([]);
   const [shuffleSettings, setShuffleSettings] = useState<ShuffleSettings>(() => {
-    const saved = localStorage.getItem('classroom_shuffle_settings_v1');
+    const saved = localStorage.getItem('classroom_shuffle_settings_v2');
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Partial<ShuffleSettings>;
-        const rules = (parsed.distanceRules || []).map(rule => ({
-          id: rule.id || `distance-rule-${Math.random()}`,
-          names: rule.names || '',
-        }));
-        const threshold = Number(parsed.distanceThreshold);
+        const forbiddenPairs = Array.isArray(parsed.forbiddenPairs)
+          ? parsed.forbiddenPairs
+              .map((rule) => ({
+                id: typeof rule?.id === 'string' ? rule.id : createRuleId('pair-rule'),
+                first: typeof rule?.first === 'string' ? rule.first.trim() : '',
+                second: typeof rule?.second === 'string' ? rule.second.trim() : '',
+              }))
+          : [];
+        const forbiddenGroups = Array.isArray(parsed.forbiddenGroups)
+          ? parsed.forbiddenGroups
+              .map((rule) => ({
+                id: typeof rule?.id === 'string' ? rule.id : createRuleId('group-rule'),
+                names: dedupeStudentNames(Array.isArray(rule?.names) ? rule.names.filter((name): name is string => typeof name === 'string') : []),
+              }))
+          : [];
+        const frontOnly = dedupeStudentNames(Array.isArray(parsed.frontOnly) ? parsed.frontOnly.filter((name): name is string => typeof name === 'string') : []);
+        const noBackRow = dedupeStudentNames(Array.isArray(parsed.noBackRow) ? parsed.noBackRow.filter((name): name is string => typeof name === 'string') : []);
+        const noSoloSeat = dedupeStudentNames(Array.isArray(parsed.noSoloSeat) ? parsed.noSoloSeat.filter((name): name is string => typeof name === 'string') : []);
         return {
           ...DEFAULT_SHUFFLE_SETTINGS,
           ...parsed,
-          distanceRules: rules.length > 0
-            ? rules
-            : DEFAULT_SHUFFLE_SETTINGS.distanceRules,
-          distanceThreshold: Number.isFinite(threshold) && threshold > 0 ? threshold : DEFAULT_SHUFFLE_SETTINGS.distanceThreshold,
+          forbiddenPairs,
+          forbiddenGroups,
+          frontOnly,
+          noBackRow,
+          noSoloSeat,
         };
       } catch (e) {
         return DEFAULT_SHUFFLE_SETTINGS;
@@ -257,53 +315,160 @@ const App: React.FC = () => {
     return set;
   }, [history]);
 
-  const shuffleArray = <T,>(items: T[]): T[] => [...items].sort(() => Math.random() - 0.5);
-
-  const resolveDistanceGroups = (students: Student[], rules: DistanceRule[]): number[][] => {
-    const nameToIndices = new Map<string, number[]>();
-
-    students.forEach((student, index) => {
-      const key = student.name.trim().toLowerCase();
-      const existing = nameToIndices.get(key) || [];
+  const buildShuffleRuleState = (baseConfig: ClassroomConfig, settings: ShuffleSettings): CompiledShuffleRules => {
+    const nameToStudentIndices = new Map<string, number[]>();
+    baseConfig.students.forEach((student, index) => {
+      const key = normalizeStudentName(student.name);
+      const existing = nameToStudentIndices.get(key) || [];
       existing.push(index);
-      nameToIndices.set(key, existing);
+      nameToStudentIndices.set(key, existing);
     });
 
-    return rules
-      .map(rule => {
-        const indices = new Set<number>();
-        const names = rule.names
-          .split(',')
-          .map(name => name.trim())
-          .filter(Boolean);
-        names.forEach((name) => {
-          const match = nameToIndices.get(name.toLowerCase());
-          if (!match) return;
-          match.forEach((index) => indices.add(index));
-        });
+    const resolveStudentIndices = (names: string[]) => {
+      const indices = new Set<number>();
+      names.forEach((name) => {
+        const matched = nameToStudentIndices.get(normalizeStudentName(name));
+        matched?.forEach((index) => indices.add(index));
+      });
+      return [...indices];
+    };
 
-        const group = [...indices].sort((a, b) => a - b);
-        return group.length >= 2 ? group : null;
-      })
-      .filter((group): group is number[] => group !== null);
+    const seatIndexByKey = new Map<string, number>();
+    baseConfig.positions.forEach((seat, index) => {
+      seatIndexByKey.set(`${seat.r},${seat.c}`, index);
+    });
+
+    const adjacencyBySeatIndex = baseConfig.positions.map((seat, seatIndex) => {
+      const neighbors = [
+        seatIndexByKey.get(`${seat.r - 1},${seat.c}`),
+        seatIndexByKey.get(`${seat.r + 1},${seat.c}`),
+        seatIndexByKey.get(`${seat.r},${seat.c - 1}`),
+        seatIndexByKey.get(`${seat.r},${seat.c + 1}`),
+      ].filter((value): value is number => value !== undefined);
+      return neighbors;
+    });
+
+    const pairGroupBySeatIndex = new Map<number, number>();
+    Object.entries(baseConfig.pairMap).forEach(([seatKey, pairId]) => {
+      const seatIndex = seatIndexByKey.get(seatKey);
+      if (seatIndex !== undefined) pairGroupBySeatIndex.set(seatIndex, pairId);
+    });
+
+    const rows = baseConfig.positions.map((seat) => seat.r);
+    const frontRow = rows.length > 0 ? Math.min(...rows) : 0;
+    const backRow = rows.length > 0 ? Math.max(...rows) : 0;
+
+    const seatsWithSideNeighbor = new Set<number>();
+    baseConfig.positions.forEach((seat, seatIndex) => {
+      if (seatIndexByKey.has(`${seat.r},${seat.c - 1}`) || seatIndexByKey.has(`${seat.r},${seat.c + 1}`)) {
+        seatsWithSideNeighbor.add(seatIndex);
+      }
+    });
+
+    const frontOnlyStudents = new Set(resolveStudentIndices(settings.frontOnly));
+    const noBackRowStudents = new Set(resolveStudentIndices(settings.noBackRow));
+    const noSoloSeatStudents = new Set(resolveStudentIndices(settings.noSoloSeat));
+
+    const allowedSeatIndicesByStudent = baseConfig.students.map((_, studentIndex) => {
+      return baseConfig.positions
+        .map((seat, seatIndex) => ({ seat, seatIndex }))
+        .filter(({ seat, seatIndex }) => {
+          if (frontOnlyStudents.has(studentIndex) && seat.r !== frontRow) return false;
+          if (noBackRowStudents.has(studentIndex) && seat.r === backRow) return false;
+          if (noSoloSeatStudents.has(studentIndex) && !seatsWithSideNeighbor.has(seatIndex)) return false;
+          return true;
+        })
+        .map(({ seatIndex }) => seatIndex);
+    });
+
+    const forbiddenPairTargets = new Map<number, Set<number>>();
+    settings.forbiddenPairs.forEach((rule) => {
+      const firstIndices = resolveStudentIndices([rule.first]);
+      const secondIndices = resolveStudentIndices([rule.second]);
+      firstIndices.forEach((firstIndex) => {
+        secondIndices.forEach((secondIndex) => {
+          if (firstIndex === secondIndex) return;
+          if (!forbiddenPairTargets.has(firstIndex)) forbiddenPairTargets.set(firstIndex, new Set<number>());
+          if (!forbiddenPairTargets.has(secondIndex)) forbiddenPairTargets.set(secondIndex, new Set<number>());
+          forbiddenPairTargets.get(firstIndex)!.add(secondIndex);
+          forbiddenPairTargets.get(secondIndex)!.add(firstIndex);
+        });
+      });
+    });
+
+    const forbiddenGroupTargets = new Map<number, Set<number>>();
+    settings.forbiddenGroups.forEach((rule) => {
+      const members = resolveStudentIndices(rule.names);
+      for (let i = 0; i < members.length; i += 1) {
+        for (let j = i + 1; j < members.length; j += 1) {
+          const firstIndex = members[i];
+          const secondIndex = members[j];
+          if (!forbiddenGroupTargets.has(firstIndex)) forbiddenGroupTargets.set(firstIndex, new Set<number>());
+          if (!forbiddenGroupTargets.has(secondIndex)) forbiddenGroupTargets.set(secondIndex, new Set<number>());
+          forbiddenGroupTargets.get(firstIndex)!.add(secondIndex);
+          forbiddenGroupTargets.get(secondIndex)!.add(firstIndex);
+        }
+      }
+    });
+
+    const hasHardRules = settings.forbiddenPairs.length > 0
+      || settings.forbiddenGroups.length > 0
+      || settings.frontOnly.length > 0
+      || settings.noBackRow.length > 0
+      || settings.noSoloSeat.length > 0;
+
+    return {
+      hasHardRules,
+      seatIndexByKey,
+      adjacencyBySeatIndex,
+      pairGroupBySeatIndex,
+      frontRow,
+      backRow,
+      allowedSeatIndicesByStudent,
+      forbiddenPairTargets,
+      forbiddenGroupTargets,
+    };
   };
 
-  const buildDistancePenalty = (positions: Position[], students: Student[], distanceRules: DistanceRule[], threshold: number) => {
-    const groups = resolveDistanceGroups(students, distanceRules);
-    if (groups.length === 0 || positions.length === 0) return 0;
+  const buildRulePenalty = (positions: Position[], compiledRules: CompiledShuffleRules) => {
+    if (!compiledRules.hasHardRules) return 0;
 
     let violations = 0;
-    groups.forEach((group) => {
-      for (let i = 0; i < group.length; i += 1) {
-        for (let j = i + 1; j < group.length; j += 1) {
-          const a = group[i];
-          const b = group[j];
-          const seatA = positions[a];
-          const seatB = positions[b];
-          if (!seatA || !seatB) continue;
-          const distance = Math.abs(seatA.r - seatB.r) + Math.abs(seatA.c - seatB.c);
-          if (distance < threshold) violations += 1;
-        }
+    const assignedSeatByStudent = positions.map((seat) => compiledRules.seatIndexByKey.get(`${seat.r},${seat.c}`));
+
+    assignedSeatByStudent.forEach((seatIndex, studentIndex) => {
+      if (seatIndex === undefined) {
+        violations += 1;
+        return;
+      }
+
+      if (!compiledRules.allowedSeatIndicesByStudent[studentIndex]?.includes(seatIndex)) {
+        violations += 1;
+      }
+
+      const pairTargets = compiledRules.forbiddenPairTargets.get(studentIndex);
+      if (pairTargets) {
+        pairTargets.forEach((otherStudentIndex) => {
+          if (otherStudentIndex <= studentIndex) return;
+          const otherSeatIndex = assignedSeatByStudent[otherStudentIndex];
+          if (otherSeatIndex === undefined) return;
+          const pairGroup = compiledRules.pairGroupBySeatIndex.get(seatIndex);
+          if (pairGroup !== undefined && pairGroup === compiledRules.pairGroupBySeatIndex.get(otherSeatIndex)) {
+            violations += 1;
+          }
+        });
+      }
+
+      const groupTargets = compiledRules.forbiddenGroupTargets.get(studentIndex);
+      if (groupTargets) {
+        groupTargets.forEach((otherStudentIndex) => {
+          if (otherStudentIndex <= studentIndex) return;
+          const otherSeatIndex = assignedSeatByStudent[otherStudentIndex];
+          if (otherSeatIndex === undefined) return;
+          if (compiledRules.adjacencyBySeatIndex[seatIndex]?.includes(otherSeatIndex)) {
+            violations += 1;
+          }
+        });
       }
     });
 
@@ -453,16 +618,16 @@ const App: React.FC = () => {
     options: {
       avoidDuplicate: boolean;
       balanceGender: boolean;
-      distanceRules: DistanceRule[];
-      distanceThreshold: number;
+      settings: ShuffleSettings;
       maxAttempts?: number;
     },
-  ): { positions: Position[]; avoided: boolean } => {
+  ): { positions: Position[]; status: ShuffleResultStatus } => {
     const maxAttempts = options.maxAttempts || 500;
     const seen = new Set<string>();
     const shouldTrack = options.avoidDuplicate;
+    const compiledRules = buildShuffleRuleState(baseConfig, options.settings);
     let bestFallback: Position[] | null = null;
-    let bestDistancePenalty = Number.MAX_SAFE_INTEGER;
+    let bestRulePenalty = Number.MAX_SAFE_INTEGER;
     let bestHistoryPenalty = Number.MAX_SAFE_INTEGER;
     let bestGenderPenalty = Number.MAX_SAFE_INTEGER;
 
@@ -470,6 +635,118 @@ const App: React.FC = () => {
       if (a.length !== b.length) return false;
       return a.every((pos, i) => pos.r === b[i].r && pos.c === b[i].c);
     };
+
+    const isHistoryBlocked = (positions: Position[]) => {
+      const shuffledSignature = createLayoutSignature({ ...baseConfig, positions });
+      const shuffledPairSignatures = createPairNameSignature({ ...baseConfig, positions });
+      const hasForbiddenPair = shuffledPairSignatures.some((signature) => savedPairSignatures.has(signature));
+      const hasForbiddenLayout = savedLayoutSignatures.has(shuffledSignature);
+      return shouldTrack && (hasForbiddenPair || hasForbiddenLayout);
+    };
+
+    const buildCandidateWithBacktracking = (requireHistoryClear: boolean): Position[] | null => {
+      if (!compiledRules.hasHardRules) return null;
+
+      const preferredSeatIndices = options.balanceGender
+        ? buildGenderBalancedPositions(baseConfig).map((seat) => compiledRules.seatIndexByKey.get(`${seat.r},${seat.c}`) ?? -1)
+        : [];
+
+      if (compiledRules.allowedSeatIndicesByStudent.some((allowedSeats) => allowedSeats.length === 0)) return null;
+
+      const studentOrder = baseConfig.students
+        .map((_, studentIndex) => {
+          const pairCount = compiledRules.forbiddenPairTargets.get(studentIndex)?.size || 0;
+          const groupCount = compiledRules.forbiddenGroupTargets.get(studentIndex)?.size || 0;
+          return {
+            studentIndex,
+            domainSize: compiledRules.allowedSeatIndicesByStudent[studentIndex].length,
+            weight: pairCount + groupCount,
+            random: Math.random(),
+          };
+        })
+        .sort((a, b) => {
+          if (a.domainSize !== b.domainSize) return a.domainSize - b.domainSize;
+          if (a.weight !== b.weight) return b.weight - a.weight;
+          return a.random - b.random;
+        })
+        .map((item) => item.studentIndex);
+
+      const seatAssignments = Array<number | null>(baseConfig.students.length).fill(null);
+      const usedSeats = new Set<number>();
+
+      const search = (orderIndex: number): boolean => {
+        if (orderIndex >= studentOrder.length) {
+          const positions = seatAssignments.map((seatIndex) => baseConfig.positions[seatIndex!]);
+          if (isSameLayout(positions, baseConfig.positions)) return false;
+          if (requireHistoryClear && isHistoryBlocked(positions)) return false;
+          return true;
+        }
+
+        const studentIndex = studentOrder[orderIndex];
+        const preferredSeatIndex = preferredSeatIndices[studentIndex];
+        const candidates = shuffleArray(compiledRules.allowedSeatIndicesByStudent[studentIndex])
+          .filter((seatIndex) => !usedSeats.has(seatIndex))
+          .sort((a, b) => {
+            const aPreferred = a === preferredSeatIndex ? 1 : 0;
+            const bPreferred = b === preferredSeatIndex ? 1 : 0;
+            return bPreferred - aPreferred;
+          });
+
+        for (const seatIndex of candidates) {
+          let blocked = false;
+
+          const pairTargets = compiledRules.forbiddenPairTargets.get(studentIndex);
+          if (pairTargets) {
+            pairTargets.forEach((otherStudentIndex) => {
+              const otherSeatIndex = seatAssignments[otherStudentIndex];
+              if (otherSeatIndex === null || blocked) return;
+              const pairGroup = compiledRules.pairGroupBySeatIndex.get(seatIndex);
+              if (pairGroup !== undefined && pairGroup === compiledRules.pairGroupBySeatIndex.get(otherSeatIndex)) {
+                blocked = true;
+              }
+            });
+          }
+
+          const groupTargets = compiledRules.forbiddenGroupTargets.get(studentIndex);
+          if (groupTargets && !blocked) {
+            groupTargets.forEach((otherStudentIndex) => {
+              const otherSeatIndex = seatAssignments[otherStudentIndex];
+              if (otherSeatIndex === null || blocked) return;
+              if (compiledRules.adjacencyBySeatIndex[seatIndex]?.includes(otherSeatIndex)) {
+                blocked = true;
+              }
+            });
+          }
+
+          if (blocked) continue;
+
+          seatAssignments[studentIndex] = seatIndex;
+          usedSeats.add(seatIndex);
+          if (search(orderIndex + 1)) return true;
+          usedSeats.delete(seatIndex);
+          seatAssignments[studentIndex] = null;
+        }
+
+        return false;
+      };
+
+      return search(0) ? seatAssignments.map((seatIndex) => baseConfig.positions[seatIndex!]) : null;
+    };
+
+    if (compiledRules.hasHardRules) {
+      const strictAttempts = Math.max(40, Math.floor(maxAttempts / 8));
+      for (let attempt = 0; attempt < strictAttempts; attempt += 1) {
+        const positions = buildCandidateWithBacktracking(shouldTrack);
+        if (positions) return { positions, status: 'all' };
+      }
+
+      if (shouldTrack) {
+        for (let attempt = 0; attempt < strictAttempts; attempt += 1) {
+          const positions = buildCandidateWithBacktracking(false);
+          if (positions) return { positions, status: 'history_relaxed' };
+        }
+      }
+    }
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const shuffled = options.balanceGender
@@ -481,28 +758,22 @@ const App: React.FC = () => {
 
       const shuffledSignature = createLayoutSignature({ ...baseConfig, positions: shuffled });
       if (shouldTrack) seen.add(shuffledSignature);
-
-      const shuffledPairSignatures = createPairNameSignature({ ...baseConfig, positions: shuffled });
-      const hasForbiddenPair = shuffledPairSignatures.some((signature) => savedPairSignatures.has(signature));
-      const hasForbiddenLayout = savedLayoutSignatures.has(shuffledSignature);
-      const blockedByHistory = shouldTrack && (hasForbiddenPair || hasForbiddenLayout);
+      const blockedByHistory = isHistoryBlocked(shuffled);
       const historyPenalty = blockedByHistory ? 1 : 0;
-      const currentDistancePenalty = options.distanceRules.length > 0
-        ? buildDistancePenalty(shuffled, baseConfig.students, options.distanceRules, options.distanceThreshold)
-        : 0;
+      const currentRulePenalty = buildRulePenalty(shuffled, compiledRules);
       const genderPenalty = options.balanceGender ? buildGenderPenalty(shuffled, baseConfig.students) : 0;
 
-      if (currentDistancePenalty === 0 && !blockedByHistory) {
-        return { positions: shuffled, avoided: true };
+      if (currentRulePenalty === 0 && !blockedByHistory) {
+        return { positions: shuffled, status: 'all' };
       }
 
-      if (bestFallback === null || currentDistancePenalty < bestDistancePenalty || (
-        currentDistancePenalty === bestDistancePenalty && historyPenalty < bestHistoryPenalty
+      if (bestFallback === null || currentRulePenalty < bestRulePenalty || (
+        currentRulePenalty === bestRulePenalty && historyPenalty < bestHistoryPenalty
       ) || (
-        currentDistancePenalty === bestDistancePenalty && historyPenalty === bestHistoryPenalty && genderPenalty < bestGenderPenalty
+        currentRulePenalty === bestRulePenalty && historyPenalty === bestHistoryPenalty && genderPenalty < bestGenderPenalty
       )) {
         bestFallback = shuffled;
-        bestDistancePenalty = currentDistancePenalty;
+        bestRulePenalty = currentRulePenalty;
         bestHistoryPenalty = historyPenalty;
         bestGenderPenalty = genderPenalty;
       }
@@ -510,7 +781,7 @@ const App: React.FC = () => {
 
     return {
       positions: bestFallback ?? shuffleArray(baseConfig.positions),
-      avoided: false,
+      status: bestRulePenalty === 0 ? 'history_relaxed' : 'rules_relaxed',
     };
   };
   
@@ -538,7 +809,7 @@ const App: React.FC = () => {
   }, [config]);
 
   useEffect(() => {
-    localStorage.setItem('classroom_shuffle_settings_v1', JSON.stringify(shuffleSettings));
+    localStorage.setItem('classroom_shuffle_settings_v2', JSON.stringify(shuffleSettings));
   }, [shuffleSettings]);
 
   useEffect(() => {
@@ -619,17 +890,19 @@ const App: React.FC = () => {
       hasFinalized = true;
       shuffleStartLockRef.current = false;
       stopAllTimers();
-      const { positions: shuffledPositions, avoided } = buildNonDuplicateShufflePositions({
+      const { positions: shuffledPositions, status } = buildNonDuplicateShufflePositions({
         ...config,
         positions: currentPositions,
       }, {
         avoidDuplicate: shuffleSettings.avoidDuplicate,
         balanceGender: shuffleSettings.genderBalance,
-        distanceRules: shuffleSettings.distanceRules,
-        distanceThreshold: Math.max(1, shuffleSettings.distanceThreshold),
+        settings: shuffleSettings,
       });
-      if (!avoided) {
-        alert('자리 섞기 조건(중복 회피/거리두기)을 만족하는 배치가 없어 가장 유사한 배치로 적용했어요.');
+      if (status === 'history_relaxed') {
+        alert('규칙은 지켰지만 이전 기록과 다른 배치를 찾지 못해 중복 허용 배치로 적용했어요.');
+      }
+      if (status === 'rules_relaxed') {
+        alert('현재 자리 구조로는 모든 규칙을 동시에 만족하는 배치를 찾지 못해 가장 가까운 배치로 적용했어요.');
       }
       setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
       setIsShuffling(false);
@@ -2218,38 +2491,94 @@ interface ShuffleSettingsViewProps {
 
 const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, onChange }) => {
   const studentNames = useMemo(() => {
-    const seen = new Set<string>();
-    return students
-      .map(student => student.name)
-      .filter((name) => {
-        const trimmed = name.trim();
-        if (!trimmed || seen.has(trimmed.toLowerCase())) return false;
-        seen.add(trimmed.toLowerCase());
-        return true;
-      });
+    return dedupeStudentNames(students.map(student => student.name));
   }, [students]);
 
-  const createDistanceRuleId = () => `distance-rule-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+  const updateListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', nextNames: string[]) => {
+    onChange({ ...settings, [key]: dedupeStudentNames(nextNames) });
+  };
 
-  const updateRule = (id: string, names: string) => {
+  const addNameToListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', name: string) => {
+    if (!name.trim()) return;
+    updateListRule(key, [...settings[key], name.trim()]);
+  };
+
+  const removeNameFromListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', name: string) => {
+    updateListRule(key, settings[key].filter((item) => item !== name));
+  };
+
+  const addForbiddenPairRule = () => {
     onChange({
       ...settings,
-      distanceRules: settings.distanceRules.map((rule) => (rule.id === id ? { ...rule, names } : rule)),
+      forbiddenPairs: [...settings.forbiddenPairs, { id: createRuleId('pair-rule'), first: '', second: '' }],
     });
   };
 
-  const removeRule = (id: string) => {
+  const updateForbiddenPairRule = (id: string, field: 'first' | 'second', value: string) => {
     onChange({
       ...settings,
-      distanceRules: settings.distanceRules.filter((rule) => rule.id !== id),
+      forbiddenPairs: settings.forbiddenPairs.map((rule) => (rule.id === id ? { ...rule, [field]: value } : rule)),
     });
   };
 
-  const addDistanceRule = () => {
+  const removeForbiddenPairRule = (id: string) => {
     onChange({
       ...settings,
-      distanceRules: [...settings.distanceRules, { id: createDistanceRuleId(), names: '' }],
+      forbiddenPairs: settings.forbiddenPairs.filter((rule) => rule.id !== id),
     });
+  };
+
+  const addForbiddenGroupRule = () => {
+    onChange({
+      ...settings,
+      forbiddenGroups: [...settings.forbiddenGroups, { id: createRuleId('group-rule'), names: [] }],
+    });
+  };
+
+  const addNameToGroupRule = (id: string, name: string) => {
+    if (!name.trim()) return;
+    onChange({
+      ...settings,
+      forbiddenGroups: settings.forbiddenGroups.map((rule) => (
+        rule.id === id ? { ...rule, names: dedupeStudentNames([...rule.names, name.trim()]) } : rule
+      )),
+    });
+  };
+
+  const removeNameFromGroupRule = (id: string, name: string) => {
+    onChange({
+      ...settings,
+      forbiddenGroups: settings.forbiddenGroups.map((rule) => (
+        rule.id === id ? { ...rule, names: rule.names.filter((item) => item !== name) } : rule
+      )),
+    });
+  };
+
+  const removeForbiddenGroupRule = (id: string) => {
+    onChange({
+      ...settings,
+      forbiddenGroups: settings.forbiddenGroups.filter((rule) => rule.id !== id),
+    });
+  };
+
+  const renderNameChips = (names: string[], onRemove: (name: string) => void, accent: string) => {
+    if (names.length === 0) {
+      return <div className="text-sm text-stone-400">선택 없음</div>;
+    }
+
+    return (
+      <div className="flex flex-wrap gap-2">
+        {names.map((name) => (
+          <button
+            key={name}
+            onClick={() => onRemove(name)}
+            className={`px-3 py-1.5 rounded-full text-sm font-black border ${accent}`}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+    );
   };
 
   return (
@@ -2296,60 +2625,153 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
         </div>
       </section>
 
-      <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7 flex flex-col gap-5">
-        <div className="flex items-start justify-between gap-4 lg:items-center">
+      <section className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
+        <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">같이 앉으면 안됨</h3>
+              <p className="text-xs lg:text-sm text-stone-500">짝 배치 금지</p>
+            </div>
+            <button
+              onClick={addForbiddenPairRule}
+              className="px-4 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-600 font-black text-sm hover:bg-amber-100"
+            >
+              추가
+            </button>
+          </div>
+          {settings.forbiddenPairs.length === 0 ? (
+            <div className="text-sm text-stone-400">규칙 없음</div>
+          ) : (
+            <div className="space-y-3">
+              {settings.forbiddenPairs.map((rule) => (
+                <div key={rule.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+                  <select
+                    value={rule.first}
+                    onChange={(e) => updateForbiddenPairRule(rule.id, 'first', e.target.value)}
+                    className="w-full border-2 border-stone-200 rounded-xl px-3 py-3 bg-white font-bold text-stone-700"
+                  >
+                    <option value="">학생</option>
+                    {studentNames.map((name) => <option key={`${rule.id}-${name}-a`} value={name}>{name}</option>)}
+                  </select>
+                  <select
+                    value={rule.second}
+                    onChange={(e) => updateForbiddenPairRule(rule.id, 'second', e.target.value)}
+                    className="w-full border-2 border-stone-200 rounded-xl px-3 py-3 bg-white font-bold text-stone-700"
+                  >
+                    <option value="">학생</option>
+                    {studentNames.map((name) => <option key={`${rule.id}-${name}-b`} value={name}>{name}</option>)}
+                  </select>
+                  <button
+                    onClick={() => removeForbiddenPairRule(rule.id)}
+                    className="h-12 px-4 rounded-xl border-2 border-rose-200 text-rose-500 hover:bg-rose-50"
+                  >
+                    <span className="sr-only">규칙 삭제</span>
+                    X
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">모여있으면 안됨</h3>
+              <p className="text-xs lg:text-sm text-stone-500">상하좌우 인접 금지</p>
+            </div>
+            <button
+              onClick={addForbiddenGroupRule}
+              className="px-4 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-600 font-black text-sm hover:bg-amber-100"
+            >
+              추가
+            </button>
+          </div>
+          {settings.forbiddenGroups.length === 0 ? (
+            <div className="text-sm text-stone-400">규칙 없음</div>
+          ) : (
+            <div className="space-y-3">
+              {settings.forbiddenGroups.map((rule) => (
+                <div key={rule.id} className="rounded-2xl border border-stone-200 bg-stone-50 p-3 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <select
+                      value=""
+                      onChange={(e) => addNameToGroupRule(rule.id, e.target.value)}
+                      className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
+                    >
+                      <option value="">학생 추가</option>
+                      {studentNames
+                        .filter((name) => !rule.names.includes(name))
+                        .map((name) => <option key={`${rule.id}-${name}`} value={name}>{name}</option>)}
+                    </select>
+                    <button
+                      onClick={() => removeForbiddenGroupRule(rule.id)}
+                      className="h-11 px-4 rounded-xl border-2 border-rose-200 text-rose-500 hover:bg-rose-50"
+                    >
+                      <span className="sr-only">규칙 삭제</span>
+                      X
+                    </button>
+                  </div>
+                  {renderNameChips(rule.names, (name) => removeNameFromGroupRule(rule.id, name), 'bg-white border-stone-200 text-stone-700 hover:border-rose-300')}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
           <div>
-            <h3 className="font-black text-stone-800 text-xl lg:text-2xl font-jua">거리두기</h3>
-            <p className="text-sm lg:text-base text-stone-500">조합으로 지정한 학생들은 서로 멀리 떨어지도록 배치합니다.</p>
+            <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">맨 앞만</h3>
+            <p className="text-xs lg:text-sm text-stone-500">첫 줄만 허용</p>
           </div>
-          <button
-            onClick={addDistanceRule}
-            className="px-4 lg:px-5 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-600 font-black text-sm lg:text-base hover:bg-amber-100"
+          <select
+            value=""
+            onChange={(e) => addNameToListRule('frontOnly', e.target.value)}
+            className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
           >
-            조합 추가
-          </button>
+            <option value="">학생 추가</option>
+            {studentNames
+              .filter((name) => !settings.frontOnly.includes(name))
+              .map((name) => <option key={`front-${name}`} value={name}>{name}</option>)}
+          </select>
+          {renderNameChips(settings.frontOnly, (name) => removeNameFromListRule('frontOnly', name), 'bg-amber-50 border-amber-200 text-amber-700 hover:border-amber-300')}
         </div>
 
-        <div className="flex items-center gap-4 bg-stone-50 border border-stone-100 rounded-xl p-3 lg:p-4">
-          <span className="text-sm lg:text-base font-black text-stone-700">거리 기준(맨해튼)</span>
-          <input
-            type="number"
-            min={2}
-            max={10}
-            value={settings.distanceThreshold}
-            onChange={(e) => onChange({ ...settings, distanceThreshold: Math.max(2, parseInt(e.target.value, 10) || 2) })}
-            className="w-20 lg:w-24 bg-white border-2 border-stone-200 rounded-lg px-3 py-2 text-center font-black text-stone-700"
-          />
-        </div>
-
-        <datalist id="shuffle-settings-student-names">
-          {studentNames.map(name => <option key={name} value={name} />)}
-        </datalist>
-
-        {settings.distanceRules.length === 0 ? (
-          <p className="text-stone-500 text-sm lg:text-base">거리두기 규칙이 없어요. 이름을 입력해 조합을 추가해 주세요.</p>
-        ) : (
-          <div className="space-y-3">
-            {settings.distanceRules.map(rule => (
-              <div key={rule.id} className="grid grid-cols-[1fr_auto] gap-3 items-start">
-                <input
-                  value={rule.names}
-                  onChange={(e) => updateRule(rule.id, e.target.value)}
-                  list="shuffle-settings-student-names"
-                  placeholder="예: 김철수, 이영희, 박민수"
-                  className="w-full border-2 border-stone-200 rounded-xl px-3 lg:px-4 py-3 bg-white font-medium text-stone-700"
-                />
-                <button
-                  onClick={() => removeRule(rule.id)}
-                  className="h-12 lg:h-12 px-4 rounded-xl border-2 border-rose-200 text-rose-500 hover:bg-rose-50"
-                >
-                  <span className="sr-only">규칙 삭제</span>
-                  X
-                </button>
-              </div>
-            ))}
+        <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
+          <div>
+            <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">맨 뒤 금지</h3>
+            <p className="text-xs lg:text-sm text-stone-500">마지막 줄 제외</p>
           </div>
-        )}
+          <select
+            value=""
+            onChange={(e) => addNameToListRule('noBackRow', e.target.value)}
+            className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
+          >
+            <option value="">학생 추가</option>
+            {studentNames
+              .filter((name) => !settings.noBackRow.includes(name))
+              .map((name) => <option key={`back-${name}`} value={name}>{name}</option>)}
+          </select>
+          {renderNameChips(settings.noBackRow, (name) => removeNameFromListRule('noBackRow', name), 'bg-sky-50 border-sky-200 text-sky-700 hover:border-sky-300')}
+        </div>
+
+        <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4 xl:col-span-2">
+          <div>
+            <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">혼자 앉기 금지</h3>
+            <p className="text-xs lg:text-sm text-stone-500">좌우 중 한 자리 이상 이웃 필요</p>
+          </div>
+          <select
+            value=""
+            onChange={(e) => addNameToListRule('noSoloSeat', e.target.value)}
+            className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
+          >
+            <option value="">학생 추가</option>
+            {studentNames
+              .filter((name) => !settings.noSoloSeat.includes(name))
+              .map((name) => <option key={`solo-${name}`} value={name}>{name}</option>)}
+          </select>
+          {renderNameChips(settings.noSoloSeat, (name) => removeNameFromListRule('noSoloSeat', name), 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-300')}
+        </div>
       </section>
     </div>
   );
