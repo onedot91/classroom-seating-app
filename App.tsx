@@ -16,6 +16,9 @@ type ShuffleSettings = {
   distanceThreshold: number;
 };
 
+type LayoutPerspective = 'student' | 'teacher';
+type SaveModalAction = 'history' | 'capture';
+
 const DEFAULT_STUDENTS: Student[] = Array.from({ length: 22 }, (_, i) => ({
   name: `학생${i + 1}`,
   gender: 'M'
@@ -84,6 +87,8 @@ const App: React.FC = () => {
 
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [newRecordTitle, setNewRecordTitle] = useState('');
+  const [saveModalAction, setSaveModalAction] = useState<SaveModalAction>('history');
+  const [layoutPerspective, setLayoutPerspective] = useState<LayoutPerspective>('student');
   const [isResetSettingsConfirmOpen, setIsResetSettingsConfirmOpen] = useState(false);
   
   // SettingsView 상태를 App으로 끌어올림
@@ -692,7 +697,19 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const handleCapture = async () => {
+  const getDefaultRecordTitle = useCallback(() => {
+    return `${new Date().getMonth() + 1}월 ${new Date().getDate()}일 자리 배치`;
+  }, []);
+
+  const sanitizeFileName = useCallback((value: string) => {
+    const normalized = value
+      .trim()
+      .replace(/[\\/:*?"<>|]/g, '')
+      .replace(/\s+/g, ' ');
+    return normalized || getDefaultRecordTitle();
+  }, [getDefaultRecordTitle]);
+
+  const captureLayoutImage = useCallback(async (title: string) => {
     if (!layoutContainerRef.current || isCapturing) return;
 
     const layoutRoot = layoutContainerRef.current;
@@ -706,7 +723,7 @@ const App: React.FC = () => {
     const isIOS =
       /iPad|iPhone|iPod/.test(navigator.userAgent) ||
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const fileName = `seating_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+    const fileName = `${sanitizeFileName(title)}.jpg`;
     const desktopPaddingX = 56;
     const desktopPaddingY = 34;
 
@@ -825,11 +842,21 @@ const App: React.FC = () => {
     } finally {
       setIsCapturing(false);
     }
-  };
-  const triggerSaveModal = () => {
-    setNewRecordTitle(`${new Date().getMonth() + 1}월 ${new Date().getDate()}일 자리 배치`);
+  }, [getDefaultRecordTitle, isCapturing, isCoarsePointerDevice, sanitizeFileName]);
+
+  const openSaveModal = (action: SaveModalAction) => {
+    setSaveModalAction(action);
+    setNewRecordTitle(getDefaultRecordTitle());
     setIsSaveModalOpen(true);
     audioService.playClick();
+  };
+
+  const handleCapture = () => {
+    openSaveModal('capture');
+  };
+
+  const triggerSaveModal = () => {
+    openSaveModal('history');
   };
 
   const handleSaveToHistory = async () => {
@@ -882,6 +909,17 @@ const App: React.FC = () => {
       setHistory(prev => [newItem, ...prev]);
       alert('이미지 생성에 실패하여 텍스트 데이터만 저장되었습니다.');
     }
+  };
+
+  const handleSaveModalConfirm = async () => {
+    if (!newRecordTitle.trim()) return;
+    if (saveModalAction === 'capture') {
+      const captureTitle = newRecordTitle.trim();
+      setIsSaveModalOpen(false);
+      await captureLayoutImage(captureTitle);
+      return;
+    }
+    await handleSaveToHistory();
   };
 
   const handleConfirmAction = () => {
@@ -1152,7 +1190,11 @@ const App: React.FC = () => {
                 <Type size={32} />
               </div>
               <h3 className="text-2xl font-black text-stone-800 font-jua">기록 제목 짓기</h3>
-              <p className="text-stone-500 font-medium text-sm">나중에 기억하기 쉬운 멋진 이름을 지어주세요!</p>
+              <p className="text-stone-500 font-medium text-sm">
+                {saveModalAction === 'capture'
+                  ? '이미지 파일 이름으로 사용할 제목을 입력해 주세요.'
+                  : '나중에 기억하기 쉬운 멋진 이름을 지어주세요!'}
+              </p>
             </div>
             
             <div className="relative">
@@ -1162,7 +1204,7 @@ const App: React.FC = () => {
                 maxLength={30}
                 value={newRecordTitle}
                 onChange={e => setNewRecordTitle(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleSaveToHistory()}
+                onKeyDown={e => e.key === 'Enter' && handleSaveModalConfirm()}
                 placeholder="예: 우리반 3월 첫 짝궁"
                 className="w-full bg-stone-50 border-2 border-stone-200 rounded-xl px-5 py-4 text-xl font-bold outline-none focus:border-amber-400 focus:bg-white focus:ring-4 focus:ring-amber-50 transition-all text-stone-700 font-jua placeholder:text-stone-300 placeholder:font-sans"
               />
@@ -1179,11 +1221,11 @@ const App: React.FC = () => {
                 취소
               </button>
               <button 
-                onClick={handleSaveToHistory}
+                onClick={handleSaveModalConfirm}
                 disabled={!newRecordTitle.trim()}
                 className="flex-1 py-3.5 rounded-xl font-black text-white bg-amber-500 shadow-[0_4px_0_#b45309] hover:translate-y-[2px] hover:shadow-[0_2px_0_#b45309] active:translate-y-[4px] active:shadow-none transition-all disabled:bg-stone-200 disabled:shadow-none font-jua text-lg"
               >
-                저장하기
+                {saveModalAction === 'capture' ? '이미지 저장' : '저장하기'}
               </button>
             </div>
           </div>
@@ -1449,6 +1491,31 @@ const App: React.FC = () => {
               </section>
 
               <section className="grid grid-cols-3 lg:flex lg:flex-col gap-2 lg:gap-3 pb-safe">
+                <div className="col-span-3 rounded-xl lg:rounded-2xl border border-stone-100 bg-stone-50 p-2 lg:p-3">
+                  <div className="mb-2 px-1 text-[10px] lg:text-sm font-black text-stone-500 font-jua">출력 관점</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => { audioService.playClick(); setLayoutPerspective('teacher'); }}
+                      className={`rounded-xl px-2 py-2.5 text-[11px] lg:text-sm font-black transition-all ${
+                        layoutPerspective === 'teacher'
+                          ? 'bg-white text-amber-700 border-2 border-amber-300 shadow-sm'
+                          : 'bg-stone-100 text-stone-500 border-2 border-transparent hover:bg-white'
+                      }`}
+                    >
+                      교사 관점
+                    </button>
+                    <button
+                      onClick={() => { audioService.playClick(); setLayoutPerspective('student'); }}
+                      className={`rounded-xl px-2 py-2.5 text-[11px] lg:text-sm font-black transition-all ${
+                        layoutPerspective === 'student'
+                          ? 'bg-white text-amber-700 border-2 border-amber-300 shadow-sm'
+                          : 'bg-stone-100 text-stone-500 border-2 border-transparent hover:bg-white'
+                      }`}
+                    >
+                      학생 관점
+                    </button>
+                  </div>
+                </div>
                 <button 
                   onClick={handleCapture}
                   disabled={isCapturing}
@@ -1518,6 +1585,7 @@ const App: React.FC = () => {
                 <LayoutView 
                   seats={seats} 
                   range={visibleRange}
+                  perspective={layoutPerspective}
                   editMode={editMode}
                   onSeatClick={handleSeatInteraction}
                   isShuffling={isShuffling}
@@ -1615,6 +1683,7 @@ const App: React.FC = () => {
 interface LayoutViewProps {
   seats: Seat[];
   range: { startR: number, endR: number, startC: number, endC: number };
+  perspective: LayoutPerspective;
   editMode: EditModeType;
   onSeatClick: (r: number, c: number) => void;
   isShuffling: boolean;
@@ -1624,7 +1693,7 @@ interface LayoutViewProps {
   selectedSeat: {r: number, c: number} | null;
 }
 
-const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatClick, isShuffling, isCapturing, shufflingOffsets, onMove, selectedSeat }) => {
+const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, perspective, editMode, onSeatClick, isShuffling, isCapturing, shufflingOffsets, onMove, selectedSeat }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const [dragOverPos, setDragOverPos] = useState<string | null>(null);
@@ -1638,6 +1707,13 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
   const gridWidth = cols * seatWidth + Math.max(0, cols - 1) * gapX;
   const gridHeight = rows * seatHeight + Math.max(0, rows - 1) * gapY;
   const overlayPad = 28;
+  const isTeacherPerspective = perspective === 'teacher';
+  const toVisualRow = useCallback((row: number) => {
+    return isTeacherPerspective ? range.endR - row + range.startR : row;
+  }, [isTeacherPerspective, range.endR, range.startR]);
+  const toVisualCol = useCallback((col: number) => {
+    return isTeacherPerspective ? range.endC - col + range.startC : col;
+  }, [isTeacherPerspective, range.endC, range.startC]);
 
   const groupAreas = useMemo(() => {
     const groupedSeats: Record<number, Array<{ r: number; c: number }>> = {};
@@ -1697,7 +1773,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
         edgeSet.set(k, [a, b]);
       };
 
-      const toLocal = (r: number, c: number) => [c - range.startC, r - range.startR] as [number, number];
+      const toLocal = (r: number, c: number) => [toVisualCol(c) - range.startC, toVisualRow(r) - range.startR] as [number, number];
       const localCellSet = new Set(cells.map((p) => `${p.r},${p.c}`));
 
       cells.forEach((cell) => {
@@ -1792,7 +1868,15 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
     });
 
     return areas;
-  }, [seats]);
+  }, [range.startC, range.startR, seats, toVisualCol, toVisualRow]);
+
+  const renderedSeats = useMemo(() => {
+    return [...seats].sort((a, b) => {
+      const rowDiff = toVisualRow(a.r) - toVisualRow(b.r);
+      if (rowDiff !== 0) return rowDiff;
+      return toVisualCol(a.c) - toVisualCol(b.c);
+    });
+  }, [seats, toVisualCol, toVisualRow]);
 
   useEffect(() => {
     const updateScale = () => {
@@ -1818,10 +1902,10 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
   return (
     <div ref={containerRef} className="w-full h-full relative flex flex-col items-center justify-center">
       <div className="layout-content flex flex-col items-center transition-transform duration-700 ease-out origin-center" style={{ transform: `scale(${scale})` }}>
-        <div className="capture-target inline-flex flex-col items-center">
+        <div className={`capture-target inline-flex items-center ${isTeacherPerspective ? 'flex-col-reverse' : 'flex-col'}`}>
         {/* 칠판 영역 */}
-        <div className={`w-full max-w-[500px] mb-14 flex flex-col items-center transition-opacity ${isShuffling ? 'opacity-20' : ''}`}>
-          <div className={`w-full h-28 rounded-xl border-[8px] border-[#8b5a2b] flex items-center justify-center relative chalkboard-texture overflow-hidden ${isCapturing ? 'shadow-md' : 'shadow-2xl'}`}>
+        <div className={`w-full max-w-[680px] ${isTeacherPerspective ? 'mt-14' : 'mb-14'} flex flex-col items-center transition-opacity ${isShuffling ? 'opacity-20' : ''}`}>
+          <div className={`w-full h-20 rounded-xl border-[8px] border-[#8b5a2b] flex items-center justify-center relative chalkboard-texture overflow-hidden ${isCapturing ? 'shadow-md' : 'shadow-2xl'}`}>
              {/* 분필 가루 효과 */}
              <div className={`absolute top-1/2 left-1/4 w-32 h-20 bg-white/5 rounded-full rotate-12 ${isCapturing ? '' : 'blur-xl'}`}></div>
              <div className="absolute inset-x-0 -bottom-3 h-3 bg-[#6d4520] rounded-b-lg shadow-md mx-1"></div>
@@ -1857,7 +1941,7 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
             </svg>
           </div>
           <div className="seating-grid grid gap-x-6 gap-y-10 transition-all duration-500 relative z-10" style={{ gridTemplateColumns: `repeat(${cols}, 120px)` }}>
-          {seats.map((seat) => {
+          {renderedSeats.map((seat) => {
             const posKey = `${seat.r},${seat.c}`;
             const offset = shufflingOffsets[posKey] || { x: 0, y: 0 };
             const isOver = dragOverPos === posKey;
@@ -1868,8 +1952,8 @@ const LayoutView: React.FC<LayoutViewProps> = ({ seats, range, editMode, onSeatC
               : null;
             const pairTranslate = pairPartner && (Math.abs(pairPartner.r - seat.r) + Math.abs(pairPartner.c - seat.c) === 1)
               ? (() => {
-                  const dx = pairPartner.c - seat.c;
-                  const dy = pairPartner.r - seat.r;
+                  const dx = toVisualCol(pairPartner.c) - toVisualCol(seat.c);
+                  const dy = toVisualRow(pairPartner.r) - toVisualRow(seat.r);
                   const pairCompensateX = 8;
                   const targetPairGap = gapX - pairCompensateX * 2;
                   const pairCompensateY = Math.max(0, (gapY - targetPairGap) / 2);
@@ -2272,4 +2356,3 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
 };
 
 export default App;
-
