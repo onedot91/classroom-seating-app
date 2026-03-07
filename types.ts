@@ -2,6 +2,7 @@
 export type Gender = 'M' | 'F' | 'N';
 
 export interface Student {
+  id: string;
   name: string;
   gender: Gender;
 }
