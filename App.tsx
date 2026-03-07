@@ -6,13 +6,13 @@ import * as htmlToImage from 'html-to-image';
 
 type ForbiddenPairRule = {
   id: string;
-  first: string;
-  second: string;
+  firstStudentId: string;
+  secondStudentId: string;
 };
 
 type StudentGroupRule = {
   id: string;
-  names: string[];
+  studentIds: string[];
 };
 
 type ShuffleSettings = {
@@ -43,6 +43,7 @@ type LayoutPerspective = 'student' | 'teacher';
 type SaveModalAction = 'history' | 'capture';
 
 const DEFAULT_STUDENTS: Student[] = Array.from({ length: 22 }, (_, i) => ({
+  id: `default-student-${i + 1}`,
   name: `학생${i + 1}`,
   gender: 'M'
 }));
@@ -58,6 +59,18 @@ const DEFAULT_SHUFFLE_SETTINGS: ShuffleSettings = {
 };
 
 const normalizeStudentName = (name: string) => name.trim().toLowerCase();
+const createStudentId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `student-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+};
+
+const createStudent = (name: string, gender: Gender = 'M'): Student => ({
+  id: createStudentId(),
+  name,
+  gender,
+});
 
 const dedupeStudentNames = (names: string[]) => {
   const seen = new Set<string>();
@@ -74,6 +87,41 @@ const dedupeStudentNames = (names: string[]) => {
 const createRuleId = (prefix: string) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
 
 const shuffleArray = <T,>(items: T[]): T[] => [...items].sort(() => Math.random() - 0.5);
+
+const normalizeStudents = (students: Student[]) => students.map((student) => ({
+  ...student,
+  id: typeof student.id === 'string' && student.id.trim() ? student.id : createStudentId(),
+}));
+
+const sanitizeShuffleSettings = (settings: ShuffleSettings, students: Student[]) => {
+  const validStudentIds = new Set(students.map((student) => student.id));
+  const normalizeIdList = (ids: string[]) => [...new Set(ids.filter((id) => validStudentIds.has(id)))];
+
+  const forbiddenPairs = settings.forbiddenPairs
+    .map((rule) => ({
+      ...rule,
+      firstStudentId: validStudentIds.has(rule.firstStudentId) ? rule.firstStudentId : '',
+      secondStudentId: validStudentIds.has(rule.secondStudentId) ? rule.secondStudentId : '',
+    }))
+    .filter((rule) => rule.firstStudentId && rule.secondStudentId && rule.firstStudentId !== rule.secondStudentId);
+
+  const forbiddenGroups = settings.forbiddenGroups
+    .map((rule) => ({
+      ...rule,
+      studentIds: normalizeIdList(rule.studentIds),
+    }))
+    .filter((rule) => rule.studentIds.length >= 2);
+
+  return {
+    ...DEFAULT_SHUFFLE_SETTINGS,
+    ...settings,
+    forbiddenPairs,
+    forbiddenGroups,
+    frontOnly: normalizeIdList(settings.frontOnly),
+    noBackRow: normalizeIdList(settings.noBackRow),
+    noSoloSeat: normalizeIdList(settings.noSoloSeat),
+  };
+};
 
 const GROUP_COLORS = [
   'bg-white border-stone-200', 
@@ -135,47 +183,6 @@ const App: React.FC = () => {
   const [layoutPerspective, setLayoutPerspective] = useState<LayoutPerspective>('student');
   const [isResetSettingsConfirmOpen, setIsResetSettingsConfirmOpen] = useState(false);
   
-  // SettingsView 상태를 App으로 끌어올림
-  const [editingStudents, setEditingStudents] = useState<Student[]>([]);
-  const [shuffleSettings, setShuffleSettings] = useState<ShuffleSettings>(() => {
-    const saved = localStorage.getItem('classroom_shuffle_settings_v2');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as Partial<ShuffleSettings>;
-        const forbiddenPairs = Array.isArray(parsed.forbiddenPairs)
-          ? parsed.forbiddenPairs
-              .map((rule) => ({
-                id: typeof rule?.id === 'string' ? rule.id : createRuleId('pair-rule'),
-                first: typeof rule?.first === 'string' ? rule.first.trim() : '',
-                second: typeof rule?.second === 'string' ? rule.second.trim() : '',
-              }))
-          : [];
-        const forbiddenGroups = Array.isArray(parsed.forbiddenGroups)
-          ? parsed.forbiddenGroups
-              .map((rule) => ({
-                id: typeof rule?.id === 'string' ? rule.id : createRuleId('group-rule'),
-                names: dedupeStudentNames(Array.isArray(rule?.names) ? rule.names.filter((name): name is string => typeof name === 'string') : []),
-              }))
-          : [];
-        const frontOnly = dedupeStudentNames(Array.isArray(parsed.frontOnly) ? parsed.frontOnly.filter((name): name is string => typeof name === 'string') : []);
-        const noBackRow = dedupeStudentNames(Array.isArray(parsed.noBackRow) ? parsed.noBackRow.filter((name): name is string => typeof name === 'string') : []);
-        const noSoloSeat = dedupeStudentNames(Array.isArray(parsed.noSoloSeat) ? parsed.noSoloSeat.filter((name): name is string => typeof name === 'string') : []);
-        return {
-          ...DEFAULT_SHUFFLE_SETTINGS,
-          ...parsed,
-          forbiddenPairs,
-          forbiddenGroups,
-          frontOnly,
-          noBackRow,
-          noSoloSeat,
-        };
-      } catch (e) {
-        return DEFAULT_SHUFFLE_SETTINGS;
-      }
-    }
-    return DEFAULT_SHUFFLE_SETTINGS;
-  });
-
   const STORAGE_KEY = 'classroom_history_v18';
   const CONFIG_KEY = 'classroom_config_v18';
 
@@ -186,7 +193,7 @@ const App: React.FC = () => {
 
   const normalizeConfig = (raw: Partial<ClassroomConfig>): ClassroomConfig => {
     const cols = 6;
-    const students = raw.students && raw.students.length > 0 ? raw.students : DEFAULT_STUDENTS;
+    const students = raw.students && raw.students.length > 0 ? normalizeStudents(raw.students) : DEFAULT_STUDENTS.map((student) => ({ ...student }));
     const positions = raw.positions && raw.positions.length > 0
       ? raw.positions
       : students.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
@@ -198,6 +205,97 @@ const App: React.FC = () => {
       pairMap: raw.pairMap || {},
     };
   };
+
+  const [config, setConfig] = useState<ClassroomConfig>(() => {
+    const saved = localStorage.getItem(CONFIG_KEY);
+    if (saved) { 
+      try { 
+        return normalizeConfig(JSON.parse(saved) as Partial<ClassroomConfig>);
+      } catch (e) { console.error(e); } 
+    }
+    return normalizeConfig({});
+  });
+
+  // SettingsView 상태를 App으로 끌어올림
+  const [editingStudents, setEditingStudents] = useState<Student[]>([]);
+  const [shuffleSettings, setShuffleSettings] = useState<ShuffleSettings>(() => {
+    const students = config.students;
+    const studentIdByNormalizedName = new Map<string, string[]>();
+    students.forEach((student) => {
+      const key = normalizeStudentName(student.name);
+      const existing = studentIdByNormalizedName.get(key) || [];
+      existing.push(student.id);
+      studentIdByNormalizedName.set(key, existing);
+    });
+    const mapLegacyNamesToIds = (names: string[]) => {
+      const consumed = new Set<string>();
+      const resolved: string[] = [];
+      names.forEach((name) => {
+        const candidates = studentIdByNormalizedName.get(normalizeStudentName(name)) || [];
+        const nextId = candidates.find((studentId) => !consumed.has(studentId));
+        if (!nextId) return;
+        consumed.add(nextId);
+        resolved.push(nextId);
+      });
+      return resolved;
+    };
+
+    const saved = localStorage.getItem('classroom_shuffle_settings_v3') || localStorage.getItem('classroom_shuffle_settings_v2');
+    if (!saved) return DEFAULT_SHUFFLE_SETTINGS;
+
+    try {
+      const parsed = JSON.parse(saved) as Partial<ShuffleSettings> & {
+        forbiddenPairs?: Array<Partial<ForbiddenPairRule> & { first?: string; second?: string }>;
+        forbiddenGroups?: Array<Partial<StudentGroupRule> & { names?: string[] }>;
+      };
+
+      const forbiddenPairs = Array.isArray(parsed.forbiddenPairs)
+        ? parsed.forbiddenPairs.map((rule) => {
+            const legacyIds = mapLegacyNamesToIds([rule?.first || '', rule?.second || '']);
+            return {
+              id: typeof rule?.id === 'string' ? rule.id : createRuleId('pair-rule'),
+              firstStudentId: typeof rule?.firstStudentId === 'string' ? rule.firstStudentId : (legacyIds[0] || ''),
+              secondStudentId: typeof rule?.secondStudentId === 'string' ? rule.secondStudentId : (legacyIds[1] || ''),
+            };
+          })
+        : [];
+      const forbiddenGroups = Array.isArray(parsed.forbiddenGroups)
+        ? parsed.forbiddenGroups.map((rule) => ({
+            id: typeof rule?.id === 'string' ? rule.id : createRuleId('group-rule'),
+            studentIds: Array.isArray(rule?.studentIds)
+              ? rule.studentIds.filter((studentId): studentId is string => typeof studentId === 'string')
+              : mapLegacyNamesToIds(Array.isArray(rule?.names) ? rule.names.filter((name): name is string => typeof name === 'string') : []),
+          }))
+        : [];
+      const frontOnly = Array.isArray(parsed.frontOnly)
+        ? (typeof parsed.frontOnly[0] === 'string' && students.some((student) => student.id === parsed.frontOnly[0])
+            ? parsed.frontOnly.filter((studentId): studentId is string => typeof studentId === 'string')
+            : mapLegacyNamesToIds(parsed.frontOnly.filter((name): name is string => typeof name === 'string')))
+        : [];
+      const noBackRow = Array.isArray(parsed.noBackRow)
+        ? (typeof parsed.noBackRow[0] === 'string' && students.some((student) => student.id === parsed.noBackRow[0])
+            ? parsed.noBackRow.filter((studentId): studentId is string => typeof studentId === 'string')
+            : mapLegacyNamesToIds(parsed.noBackRow.filter((name): name is string => typeof name === 'string')))
+        : [];
+      const noSoloSeat = Array.isArray(parsed.noSoloSeat)
+        ? (typeof parsed.noSoloSeat[0] === 'string' && students.some((student) => student.id === parsed.noSoloSeat[0])
+            ? parsed.noSoloSeat.filter((studentId): studentId is string => typeof studentId === 'string')
+            : mapLegacyNamesToIds(parsed.noSoloSeat.filter((name): name is string => typeof name === 'string')))
+        : [];
+
+      return sanitizeShuffleSettings({
+        ...DEFAULT_SHUFFLE_SETTINGS,
+        ...parsed,
+        forbiddenPairs,
+        forbiddenGroups,
+        frontOnly,
+        noBackRow,
+        noSoloSeat,
+      }, students);
+    } catch (e) {
+      return DEFAULT_SHUFFLE_SETTINGS;
+    }
+  });
 
   const createStudentSnapshots = (sourceConfig: ClassroomConfig): StudentSnapshot[] => {
     const seatToStudentIndex = new Map<string, number>(
@@ -316,19 +414,16 @@ const App: React.FC = () => {
   }, [history]);
 
   const buildShuffleRuleState = (baseConfig: ClassroomConfig, settings: ShuffleSettings): CompiledShuffleRules => {
-    const nameToStudentIndices = new Map<string, number[]>();
+    const studentIndexById = new Map<string, number>();
     baseConfig.students.forEach((student, index) => {
-      const key = normalizeStudentName(student.name);
-      const existing = nameToStudentIndices.get(key) || [];
-      existing.push(index);
-      nameToStudentIndices.set(key, existing);
+      studentIndexById.set(student.id, index);
     });
 
-    const resolveStudentIndices = (names: string[]) => {
+    const resolveStudentIndices = (studentIds: string[]) => {
       const indices = new Set<number>();
-      names.forEach((name) => {
-        const matched = nameToStudentIndices.get(normalizeStudentName(name));
-        matched?.forEach((index) => indices.add(index));
+      studentIds.forEach((studentId) => {
+        const matched = studentIndexById.get(studentId);
+        if (matched !== undefined) indices.add(matched);
       });
       return [...indices];
     };
@@ -383,8 +478,8 @@ const App: React.FC = () => {
 
     const forbiddenPairTargets = new Map<number, Set<number>>();
     settings.forbiddenPairs.forEach((rule) => {
-      const firstIndices = resolveStudentIndices([rule.first]);
-      const secondIndices = resolveStudentIndices([rule.second]);
+      const firstIndices = resolveStudentIndices([rule.firstStudentId]);
+      const secondIndices = resolveStudentIndices([rule.secondStudentId]);
       firstIndices.forEach((firstIndex) => {
         secondIndices.forEach((secondIndex) => {
           if (firstIndex === secondIndex) return;
@@ -398,7 +493,7 @@ const App: React.FC = () => {
 
     const forbiddenGroupTargets = new Map<number, Set<number>>();
     settings.forbiddenGroups.forEach((rule) => {
-      const members = resolveStudentIndices(rule.names);
+      const members = resolveStudentIndices(rule.studentIds);
       for (let i = 0; i < members.length; i += 1) {
         for (let j = i + 1; j < members.length; j += 1) {
           const firstIndex = members[i];
@@ -785,16 +880,6 @@ const App: React.FC = () => {
     };
   };
   
-  const [config, setConfig] = useState<ClassroomConfig>(() => {
-    const saved = localStorage.getItem(CONFIG_KEY);
-    if (saved) { 
-      try { 
-        return normalizeConfig(JSON.parse(saved) as Partial<ClassroomConfig>);
-      } catch (e) { console.error(e); } 
-    }
-    return normalizeConfig({});
-  });
-  
   const [displayStudents, setDisplayStudents] = useState<Student[]>(config.students);
   const countdownTimerRef = useRef<number | null>(null);
   const countdownPollTimerRef = useRef<number | null>(null);
@@ -809,8 +894,15 @@ const App: React.FC = () => {
   }, [config]);
 
   useEffect(() => {
-    localStorage.setItem('classroom_shuffle_settings_v2', JSON.stringify(shuffleSettings));
+    localStorage.setItem('classroom_shuffle_settings_v3', JSON.stringify(shuffleSettings));
   }, [shuffleSettings]);
+
+  useEffect(() => {
+    setShuffleSettings((prev) => {
+      const next = sanitizeShuffleSettings(prev, config.students);
+      return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
+    });
+  }, [config.students]);
 
   useEffect(() => {
     try {
@@ -1393,7 +1485,7 @@ const App: React.FC = () => {
   const handleResetAllSettings = () => {
     setIsResetSettingsConfirmOpen(false);
     audioService.playClick();
-    setEditingStudents(DEFAULT_STUDENTS.map(student => ({ ...student })));
+    setEditingStudents(DEFAULT_STUDENTS.map(student => ({ ...student, id: createStudentId() })));
     setShuffleSettings({ ...DEFAULT_SHUFFLE_SETTINGS });
   };
 
@@ -1402,16 +1494,17 @@ const App: React.FC = () => {
   };
 
   const handleUpdateConfig = (newStudents: Student[]) => {
+    const normalizedStudents = normalizeStudents(newStudents);
     setConfig(prev => {
       const cols = 6;
-      const positions = newStudents.length === prev.students.length 
+      const positions = normalizedStudents.length === prev.students.length 
         ? prev.positions 
-        : newStudents.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
+        : normalizedStudents.map((_, i) => ({ r: Math.floor(i / cols), c: i % cols }));
       
-      const groupMap = newStudents.length === prev.students.length ? prev.groupMap : {};
-      const pairMap = newStudents.length === prev.students.length ? prev.pairMap : {};
+      const groupMap = normalizedStudents.length === prev.students.length ? prev.groupMap : {};
+      const pairMap = normalizedStudents.length === prev.students.length ? prev.pairMap : {};
 
-      return { students: newStudents, positions, groupMap, pairMap };
+      return { students: normalizedStudents, positions, groupMap, pairMap };
     });
   };
 
@@ -2327,10 +2420,9 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
     if (newCount > students.length) {
       onChange([
         ...students, 
-        ...Array.from({ length: newCount - students.length }, (_, i) => ({
-          name: `학생${students.length + i + 1}`,
-          gender: 'M' as Gender
-        }))
+        ...Array.from({ length: newCount - students.length }, (_, i) => (
+          createStudent(`학생${students.length + i + 1}`, 'M')
+        ))
       ]);
     } else {
       onChange(students.slice(0, newCount));
@@ -2369,7 +2461,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
         const hasVerticalDivider = offset < rowItems.length - 1;
         nodes.push(
           <div
-            key={`student-${i}`}
+            key={s.id}
             className={`relative flex flex-col gap-2 lg:gap-3 p-4 lg:p-5 rounded-2xl lg:rounded-3xl border-2 border-stone-100 bg-white hover:border-amber-300 transition-all shadow-sm hover:shadow-[0_8px_16px_-4px_rgba(245,158,11,0.1)] group overflow-hidden ${
               hasVerticalDivider ? 'pr-4 after:absolute after:top-0 after:bottom-0 after:right-[-0.75rem] after:w-px after:bg-stone-200' : ''
             }`}
@@ -2490,35 +2582,66 @@ interface ShuffleSettingsViewProps {
 }
 
 const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, onChange }) => {
-  const studentNames = useMemo(() => {
-    return dedupeStudentNames(students.map(student => student.name));
+  const studentOptions = useMemo(() => {
+    const totalByName = new Map<string, number>();
+    const seenByName = new Map<string, number>();
+
+    students.forEach((student) => {
+      totalByName.set(student.name, (totalByName.get(student.name) || 0) + 1);
+    });
+
+    return students.map((student) => {
+      const current = (seenByName.get(student.name) || 0) + 1;
+      seenByName.set(student.name, current);
+      const duplicateCount = totalByName.get(student.name) || 0;
+      return {
+        id: student.id,
+        label: duplicateCount > 1 ? `${student.name} ${current}` : student.name,
+      };
+    });
   }, [students]);
 
+  const labelByStudentId = useMemo(() => new Map(studentOptions.map((option) => [option.id, option.label])), [studentOptions]);
+
   const updateListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', nextNames: string[]) => {
-    onChange({ ...settings, [key]: dedupeStudentNames(nextNames) });
+    onChange(sanitizeShuffleSettings({ ...settings, [key]: nextNames }, students));
   };
 
-  const addNameToListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', name: string) => {
-    if (!name.trim()) return;
-    updateListRule(key, [...settings[key], name.trim()]);
+  const addNameToListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', studentId: string) => {
+    if (!studentId) return;
+    updateListRule(key, [...settings[key], studentId]);
   };
 
-  const removeNameFromListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', name: string) => {
-    updateListRule(key, settings[key].filter((item) => item !== name));
+  const removeNameFromListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', studentId: string) => {
+    updateListRule(key, settings[key].filter((item) => item !== studentId));
   };
 
   const addForbiddenPairRule = () => {
+    if (studentOptions.length < 2) return;
     onChange({
       ...settings,
-      forbiddenPairs: [...settings.forbiddenPairs, { id: createRuleId('pair-rule'), first: '', second: '' }],
+      forbiddenPairs: [
+        ...settings.forbiddenPairs,
+        { id: createRuleId('pair-rule'), firstStudentId: studentOptions[0].id, secondStudentId: studentOptions[1].id },
+      ],
     });
   };
 
-  const updateForbiddenPairRule = (id: string, field: 'first' | 'second', value: string) => {
-    onChange({
+  const updateForbiddenPairRule = (id: string, field: 'firstStudentId' | 'secondStudentId', value: string) => {
+    const nextSettings = {
       ...settings,
-      forbiddenPairs: settings.forbiddenPairs.map((rule) => (rule.id === id ? { ...rule, [field]: value } : rule)),
-    });
+      forbiddenPairs: settings.forbiddenPairs.map((rule) => {
+        if (rule.id !== id) return rule;
+        const nextRule = { ...rule, [field]: value };
+        if (nextRule.firstStudentId === nextRule.secondStudentId) {
+          const fallback = studentOptions.find((option) => option.id !== value)?.id || '';
+          if (field === 'firstStudentId') nextRule.secondStudentId = fallback;
+          else nextRule.firstStudentId = fallback;
+        }
+        return nextRule;
+      }),
+    };
+    onChange(sanitizeShuffleSettings(nextSettings, students));
   };
 
   const removeForbiddenPairRule = (id: string) => {
@@ -2529,29 +2652,30 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
   };
 
   const addForbiddenGroupRule = () => {
+    if (studentOptions.length < 2) return;
     onChange({
       ...settings,
-      forbiddenGroups: [...settings.forbiddenGroups, { id: createRuleId('group-rule'), names: [] }],
+      forbiddenGroups: [...settings.forbiddenGroups, { id: createRuleId('group-rule'), studentIds: [studentOptions[0].id, studentOptions[1].id] }],
     });
   };
 
-  const addNameToGroupRule = (id: string, name: string) => {
-    if (!name.trim()) return;
+  const addNameToGroupRule = (id: string, studentId: string) => {
+    if (!studentId) return;
     onChange({
       ...settings,
       forbiddenGroups: settings.forbiddenGroups.map((rule) => (
-        rule.id === id ? { ...rule, names: dedupeStudentNames([...rule.names, name.trim()]) } : rule
+        rule.id === id ? { ...rule, studentIds: [...new Set([...rule.studentIds, studentId])] } : rule
       )),
     });
   };
 
-  const removeNameFromGroupRule = (id: string, name: string) => {
-    onChange({
+  const removeNameFromGroupRule = (id: string, studentId: string) => {
+    onChange(sanitizeShuffleSettings({
       ...settings,
       forbiddenGroups: settings.forbiddenGroups.map((rule) => (
-        rule.id === id ? { ...rule, names: rule.names.filter((item) => item !== name) } : rule
+        rule.id === id ? { ...rule, studentIds: rule.studentIds.filter((item) => item !== studentId) } : rule
       )),
-    });
+    }, students));
   };
 
   const removeForbiddenGroupRule = (id: string) => {
@@ -2561,20 +2685,20 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
     });
   };
 
-  const renderNameChips = (names: string[], onRemove: (name: string) => void, accent: string) => {
-    if (names.length === 0) {
+  const renderNameChips = (studentIds: string[], onRemove: (studentId: string) => void, accent: string) => {
+    if (studentIds.length === 0) {
       return <div className="text-sm text-stone-400">선택 없음</div>;
     }
 
     return (
       <div className="flex flex-wrap gap-2">
-        {names.map((name) => (
+        {studentIds.map((studentId) => (
           <button
-            key={name}
-            onClick={() => onRemove(name)}
+            key={studentId}
+            onClick={() => onRemove(studentId)}
             className={`px-3 py-1.5 rounded-full text-sm font-black border ${accent}`}
           >
-            {name}
+            {labelByStudentId.get(studentId) || '삭제된 학생'}
           </button>
         ))}
       </div>
@@ -2646,20 +2770,24 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
               {settings.forbiddenPairs.map((rule) => (
                 <div key={rule.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
                   <select
-                    value={rule.first}
-                    onChange={(e) => updateForbiddenPairRule(rule.id, 'first', e.target.value)}
+                    value={rule.firstStudentId}
+                    onChange={(e) => updateForbiddenPairRule(rule.id, 'firstStudentId', e.target.value)}
                     className="w-full border-2 border-stone-200 rounded-xl px-3 py-3 bg-white font-bold text-stone-700"
                   >
                     <option value="">학생</option>
-                    {studentNames.map((name) => <option key={`${rule.id}-${name}-a`} value={name}>{name}</option>)}
+                    {studentOptions
+                      .filter((option) => option.id !== rule.secondStudentId)
+                      .map((option) => <option key={`${rule.id}-${option.id}-a`} value={option.id}>{option.label}</option>)}
                   </select>
                   <select
-                    value={rule.second}
-                    onChange={(e) => updateForbiddenPairRule(rule.id, 'second', e.target.value)}
+                    value={rule.secondStudentId}
+                    onChange={(e) => updateForbiddenPairRule(rule.id, 'secondStudentId', e.target.value)}
                     className="w-full border-2 border-stone-200 rounded-xl px-3 py-3 bg-white font-bold text-stone-700"
                   >
                     <option value="">학생</option>
-                    {studentNames.map((name) => <option key={`${rule.id}-${name}-b`} value={name}>{name}</option>)}
+                    {studentOptions
+                      .filter((option) => option.id !== rule.firstStudentId)
+                      .map((option) => <option key={`${rule.id}-${option.id}-b`} value={option.id}>{option.label}</option>)}
                   </select>
                   <button
                     onClick={() => removeForbiddenPairRule(rule.id)}
@@ -2700,9 +2828,9 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
                       className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
                     >
                       <option value="">학생 추가</option>
-                      {studentNames
-                        .filter((name) => !rule.names.includes(name))
-                        .map((name) => <option key={`${rule.id}-${name}`} value={name}>{name}</option>)}
+                      {studentOptions
+                        .filter((option) => !rule.studentIds.includes(option.id))
+                        .map((option) => <option key={`${rule.id}-${option.id}`} value={option.id}>{option.label}</option>)}
                     </select>
                     <button
                       onClick={() => removeForbiddenGroupRule(rule.id)}
@@ -2712,7 +2840,7 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
                       X
                     </button>
                   </div>
-                  {renderNameChips(rule.names, (name) => removeNameFromGroupRule(rule.id, name), 'bg-white border-stone-200 text-stone-700 hover:border-rose-300')}
+                  {renderNameChips(rule.studentIds, (studentId) => removeNameFromGroupRule(rule.id, studentId), 'bg-white border-stone-200 text-stone-700 hover:border-rose-300')}
                 </div>
               ))}
             </div>
@@ -2730,11 +2858,11 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
             className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
           >
             <option value="">학생 추가</option>
-            {studentNames
-              .filter((name) => !settings.frontOnly.includes(name))
-              .map((name) => <option key={`front-${name}`} value={name}>{name}</option>)}
+            {studentOptions
+              .filter((option) => !settings.frontOnly.includes(option.id))
+              .map((option) => <option key={`front-${option.id}`} value={option.id}>{option.label}</option>)}
           </select>
-          {renderNameChips(settings.frontOnly, (name) => removeNameFromListRule('frontOnly', name), 'bg-amber-50 border-amber-200 text-amber-700 hover:border-amber-300')}
+          {renderNameChips(settings.frontOnly, (studentId) => removeNameFromListRule('frontOnly', studentId), 'bg-amber-50 border-amber-200 text-amber-700 hover:border-amber-300')}
         </div>
 
         <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
@@ -2748,11 +2876,11 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
             className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
           >
             <option value="">학생 추가</option>
-            {studentNames
-              .filter((name) => !settings.noBackRow.includes(name))
-              .map((name) => <option key={`back-${name}`} value={name}>{name}</option>)}
+            {studentOptions
+              .filter((option) => !settings.noBackRow.includes(option.id))
+              .map((option) => <option key={`back-${option.id}`} value={option.id}>{option.label}</option>)}
           </select>
-          {renderNameChips(settings.noBackRow, (name) => removeNameFromListRule('noBackRow', name), 'bg-sky-50 border-sky-200 text-sky-700 hover:border-sky-300')}
+          {renderNameChips(settings.noBackRow, (studentId) => removeNameFromListRule('noBackRow', studentId), 'bg-sky-50 border-sky-200 text-sky-700 hover:border-sky-300')}
         </div>
 
         <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4 xl:col-span-2">
@@ -2766,11 +2894,11 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
             className="w-full max-w-xs border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700"
           >
             <option value="">학생 추가</option>
-            {studentNames
-              .filter((name) => !settings.noSoloSeat.includes(name))
-              .map((name) => <option key={`solo-${name}`} value={name}>{name}</option>)}
+            {studentOptions
+              .filter((option) => !settings.noSoloSeat.includes(option.id))
+              .map((option) => <option key={`solo-${option.id}`} value={option.id}>{option.label}</option>)}
           </select>
-          {renderNameChips(settings.noSoloSeat, (name) => removeNameFromListRule('noSoloSeat', name), 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-300')}
+          {renderNameChips(settings.noSoloSeat, (studentId) => removeNameFromListRule('noSoloSeat', studentId), 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:border-emerald-300')}
         </div>
       </section>
     </div>
