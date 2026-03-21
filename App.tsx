@@ -15,17 +15,25 @@ type StudentGroupRule = {
   studentIds: string[];
 };
 
+type FixedSeatRule = {
+  id: string;
+  studentId: string;
+  seatKey: string;
+};
+
 type ShuffleSettings = {
   genderBalance: boolean;
   avoidDuplicate: boolean;
   forbiddenPairs: ForbiddenPairRule[];
   forbiddenGroups: StudentGroupRule[];
+  fixedSeats: FixedSeatRule[];
   frontOnly: string[];
   noBackRow: string[];
   noSoloSeat: string[];
 };
 
 type ShuffleResultStatus = 'all' | 'history_relaxed' | 'rules_relaxed';
+type PreparedShuffleResult = { positions: Position[]; status: ShuffleResultStatus };
 
 type CompiledShuffleRules = {
   hasHardRules: boolean;
@@ -35,6 +43,7 @@ type CompiledShuffleRules = {
   frontRow: number;
   backRow: number;
   allowedSeatIndicesByStudent: number[][];
+  fixedSeatIndexByStudent: Map<number, number>;
   forbiddenPairTargets: Map<number, Set<number>>;
   forbiddenGroupTargets: Map<number, Set<number>>;
 };
@@ -53,12 +62,19 @@ const DEFAULT_SHUFFLE_SETTINGS: ShuffleSettings = {
   avoidDuplicate: true,
   forbiddenPairs: [],
   forbiddenGroups: [],
+  fixedSeats: [],
   frontOnly: [],
   noBackRow: [],
   noSoloSeat: [],
 };
+const SECRET_SHUFFLE_UNLOCK_TAPS = 3;
+const SECRET_SHUFFLE_UNLOCK_WINDOW_MS = 1400;
+const FIXED_SEAT_MISS_PENALTY = 4;
+const SHUFFLE_SEARCH_DEADLINE_MS = 180;
+const SHUFFLE_BACKTRACK_NODE_LIMIT = 12000;
 
 const normalizeStudentName = (name: string) => name.trim().toLowerCase();
+const createSeatKey = (seat: Position) => `${seat.r},${seat.c}`;
 const createStudentId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -86,15 +102,60 @@ const dedupeStudentNames = (names: string[]) => {
 
 const createRuleId = (prefix: string) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
 
-const shuffleArray = <T,>(items: T[]): T[] => [...items].sort(() => Math.random() - 0.5);
+const shuffleArray = <T,>(items: T[]): T[] => {
+  const next = [...items];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const swapIndex = Math.floor(Math.random() * (i + 1));
+    [next[i], next[swapIndex]] = [next[swapIndex], next[i]];
+  }
+  return next;
+};
+const getNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+const buildDerangedPositions = (positions: Position[], maxAttempts = 24): Position[] | null => {
+  if (positions.length <= 1) return null;
+
+  const indices = positions.map((_, index) => index);
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const shuffledIndices = shuffleArray(indices);
+    if (shuffledIndices.every((seatIndex, studentIndex) => seatIndex !== studentIndex)) {
+      return shuffledIndices.map((seatIndex) => positions[seatIndex]);
+    }
+  }
+
+  const repairedIndices = shuffleArray(indices);
+  const fixedPointIndices = repairedIndices
+    .map((seatIndex, studentIndex) => (seatIndex === studentIndex ? studentIndex : -1))
+    .filter((index) => index >= 0);
+
+  if (fixedPointIndices.length === 0) {
+    return repairedIndices.map((seatIndex) => positions[seatIndex]);
+  }
+
+  if (fixedPointIndices.length === 1) {
+    const fixedIndex = fixedPointIndices[0];
+    const swapIndex = fixedIndex === 0 ? 1 : 0;
+    [repairedIndices[fixedIndex], repairedIndices[swapIndex]] = [repairedIndices[swapIndex], repairedIndices[fixedIndex]];
+    return repairedIndices.map((seatIndex) => positions[seatIndex]);
+  }
+
+  const fixedSeatIndices = fixedPointIndices.map((studentIndex) => repairedIndices[studentIndex]);
+  fixedPointIndices.forEach((studentIndex, offset) => {
+    repairedIndices[studentIndex] = fixedSeatIndices[(offset + 1) % fixedSeatIndices.length];
+  });
+
+  return repairedIndices.map((seatIndex) => positions[seatIndex]);
+};
 
 const normalizeStudents = (students: Student[]) => students.map((student) => ({
   ...student,
   id: typeof student.id === 'string' && student.id.trim() ? student.id : createStudentId(),
 }));
 
-const sanitizeShuffleSettings = (settings: ShuffleSettings, students: Student[]) => {
+const sanitizeShuffleSettings = (settings: ShuffleSettings, students: Student[], positions: Position[] = []) => {
   const validStudentIds = new Set(students.map((student) => student.id));
+  const validSeatKeys = new Set(positions.map((position) => createSeatKey(position)));
+  const hasSeatCatalog = validSeatKeys.size > 0;
   const normalizeIdList = (ids: string[]) => [...new Set(ids.filter((id) => validStudentIds.has(id)))];
 
   const forbiddenPairs = settings.forbiddenPairs
@@ -112,11 +173,30 @@ const sanitizeShuffleSettings = (settings: ShuffleSettings, students: Student[])
     }))
     .filter((rule) => rule.studentIds.length >= 2);
 
+  const usedFixedSeatStudentIds = new Set<string>();
+  const usedFixedSeatKeys = new Set<string>();
+  const fixedSeats = settings.fixedSeats
+    .map((rule) => ({
+      ...rule,
+      studentId: validStudentIds.has(rule.studentId) ? rule.studentId : '',
+      seatKey: typeof rule.seatKey === 'string' && rule.seatKey.trim() && (!hasSeatCatalog || validSeatKeys.has(rule.seatKey))
+        ? rule.seatKey
+        : '',
+    }))
+    .filter((rule) => {
+      if (!rule.studentId || !rule.seatKey) return false;
+      if (usedFixedSeatStudentIds.has(rule.studentId) || usedFixedSeatKeys.has(rule.seatKey)) return false;
+      usedFixedSeatStudentIds.add(rule.studentId);
+      usedFixedSeatKeys.add(rule.seatKey);
+      return true;
+    });
+
   return {
     ...DEFAULT_SHUFFLE_SETTINGS,
     ...settings,
     forbiddenPairs,
     forbiddenGroups,
+    fixedSeats,
     frontOnly: normalizeIdList(settings.frontOnly),
     noBackRow: normalizeIdList(settings.noBackRow),
     noSoloSeat: normalizeIdList(settings.noSoloSeat),
@@ -182,6 +262,8 @@ const App: React.FC = () => {
   const [saveModalAction, setSaveModalAction] = useState<SaveModalAction>('history');
   const [layoutPerspective, setLayoutPerspective] = useState<LayoutPerspective>('student');
   const [isResetSettingsConfirmOpen, setIsResetSettingsConfirmOpen] = useState(false);
+  const hiddenShuffleUnlockTapCountRef = useRef(0);
+  const hiddenShuffleUnlockTimerRef = useRef<number | null>(null);
   
   const STORAGE_KEY = 'classroom_history_v18';
   const CONFIG_KEY = 'classroom_config_v18';
@@ -247,6 +329,18 @@ const App: React.FC = () => {
       const parsed = JSON.parse(saved) as Partial<ShuffleSettings> & {
         forbiddenPairs?: Array<Partial<ForbiddenPairRule> & { first?: string; second?: string }>;
         forbiddenGroups?: Array<Partial<StudentGroupRule> & { names?: string[] }>;
+        fixedSeats?: Array<Partial<FixedSeatRule> & { seat?: Partial<Position>; r?: number; c?: number }>;
+      };
+
+      const resolveFixedSeatKey = (rule: Partial<FixedSeatRule> & { seat?: Partial<Position>; r?: number; c?: number }) => {
+        if (typeof rule?.seatKey === 'string') return rule.seatKey;
+        if (typeof rule?.seat?.r === 'number' && typeof rule?.seat?.c === 'number') {
+          return createSeatKey({ r: rule.seat.r, c: rule.seat.c });
+        }
+        if (typeof rule?.r === 'number' && typeof rule?.c === 'number') {
+          return createSeatKey({ r: rule.r, c: rule.c });
+        }
+        return '';
       };
 
       const forbiddenPairs = Array.isArray(parsed.forbiddenPairs)
@@ -282,20 +376,47 @@ const App: React.FC = () => {
             ? parsed.noSoloSeat.filter((studentId): studentId is string => typeof studentId === 'string')
             : mapLegacyNamesToIds(parsed.noSoloSeat.filter((name): name is string => typeof name === 'string')))
         : [];
+      const fixedSeats = Array.isArray(parsed.fixedSeats)
+        ? parsed.fixedSeats.map((rule) => ({
+            id: typeof rule?.id === 'string' ? rule.id : createRuleId('fixed-seat-rule'),
+            studentId: typeof rule?.studentId === 'string' ? rule.studentId : '',
+            seatKey: resolveFixedSeatKey(rule),
+          }))
+        : [];
 
       return sanitizeShuffleSettings({
         ...DEFAULT_SHUFFLE_SETTINGS,
         ...parsed,
         forbiddenPairs,
         forbiddenGroups,
+        fixedSeats,
         frontOnly,
         noBackRow,
         noSoloSeat,
-      }, students);
+      }, students, config.positions);
     } catch (e) {
       return DEFAULT_SHUFFLE_SETTINGS;
     }
   });
+
+  const resetHiddenShuffleUnlock = useCallback(() => {
+    hiddenShuffleUnlockTapCountRef.current = 0;
+
+    if (hiddenShuffleUnlockTimerRef.current !== null) {
+      window.clearTimeout(hiddenShuffleUnlockTimerRef.current);
+      hiddenShuffleUnlockTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    resetHiddenShuffleUnlock();
+  }, [resetHiddenShuffleUnlock]);
+
+  useEffect(() => {
+    if (view !== 'settings-students') {
+      resetHiddenShuffleUnlock();
+    }
+  }, [resetHiddenShuffleUnlock, view]);
 
   const createStudentSnapshots = (sourceConfig: ClassroomConfig): StudentSnapshot[] => {
     const seatToStudentIndex = new Map<string, number>(
@@ -463,6 +584,14 @@ const App: React.FC = () => {
     const frontOnlyStudents = new Set(resolveStudentIndices(settings.frontOnly));
     const noBackRowStudents = new Set(resolveStudentIndices(settings.noBackRow));
     const noSoloSeatStudents = new Set(resolveStudentIndices(settings.noSoloSeat));
+    const fixedSeatIndexByStudent = new Map<number, number>();
+
+    settings.fixedSeats.forEach((rule) => {
+      const studentIndex = studentIndexById.get(rule.studentId);
+      const seatIndex = seatIndexByKey.get(rule.seatKey);
+      if (studentIndex === undefined || seatIndex === undefined) return;
+      fixedSeatIndexByStudent.set(studentIndex, seatIndex);
+    });
 
     const allowedSeatIndicesByStudent = baseConfig.students.map((_, studentIndex) => {
       return baseConfig.positions
@@ -471,6 +600,7 @@ const App: React.FC = () => {
           if (frontOnlyStudents.has(studentIndex) && seat.r !== frontRow) return false;
           if (noBackRowStudents.has(studentIndex) && seat.r === backRow) return false;
           if (noSoloSeatStudents.has(studentIndex) && !seatsWithSideNeighbor.has(seatIndex)) return false;
+          if (fixedSeatIndexByStudent.has(studentIndex) && fixedSeatIndexByStudent.get(studentIndex) !== seatIndex) return false;
           return true;
         })
         .map(({ seatIndex }) => seatIndex);
@@ -508,6 +638,7 @@ const App: React.FC = () => {
 
     const hasHardRules = settings.forbiddenPairs.length > 0
       || settings.forbiddenGroups.length > 0
+      || settings.fixedSeats.length > 0
       || settings.frontOnly.length > 0
       || settings.noBackRow.length > 0
       || settings.noSoloSeat.length > 0;
@@ -520,6 +651,7 @@ const App: React.FC = () => {
       frontRow,
       backRow,
       allowedSeatIndicesByStudent,
+      fixedSeatIndexByStudent,
       forbiddenPairTargets,
       forbiddenGroupTargets,
     };
@@ -537,7 +669,10 @@ const App: React.FC = () => {
         return;
       }
 
-      if (!compiledRules.allowedSeatIndicesByStudent[studentIndex]?.includes(seatIndex)) {
+      const fixedSeatIndex = compiledRules.fixedSeatIndexByStudent.get(studentIndex);
+      if (fixedSeatIndex !== undefined && seatIndex !== fixedSeatIndex) {
+        violations += FIXED_SEAT_MISS_PENALTY;
+      } else if (!compiledRules.allowedSeatIndicesByStudent[studentIndex]?.includes(seatIndex)) {
         violations += 1;
       }
 
@@ -721,14 +856,39 @@ const App: React.FC = () => {
     const seen = new Set<string>();
     const shouldTrack = options.avoidDuplicate;
     const compiledRules = buildShuffleRuleState(baseConfig, options.settings);
+    const searchStartedAt = getNow();
+    let backtrackNodeCount = 0;
     let bestFallback: Position[] | null = null;
     let bestRulePenalty = Number.MAX_SAFE_INTEGER;
+    let bestUnchangedSeatCount = Number.MAX_SAFE_INTEGER;
     let bestHistoryPenalty = Number.MAX_SAFE_INTEGER;
     let bestGenderPenalty = Number.MAX_SAFE_INTEGER;
 
     const isSameLayout = (a: Position[], b: Position[]) => {
       if (a.length !== b.length) return false;
       return a.every((pos, i) => pos.r === b[i].r && pos.c === b[i].c);
+    };
+
+    const countStudentsKeepingSeat = (positions: Position[]) => {
+      if (!shouldTrack || positions.length !== baseConfig.positions.length) return 0;
+      return positions.reduce((count, seat, studentIndex) => {
+        const currentSeat = baseConfig.positions[studentIndex];
+        if (currentSeat && currentSeat.r === seat.r && currentSeat.c === seat.c) {
+          return count + 1;
+        }
+        return count;
+      }, 0);
+    };
+
+    const isSearchTimedOut = () => getNow() - searchStartedAt >= SHUFFLE_SEARCH_DEADLINE_MS;
+    const buildRandomPositions = () => {
+      if (options.balanceGender) return buildGenderBalancedPositions(baseConfig);
+      if (shouldTrack) return buildDerangedPositions(baseConfig.positions) ?? shuffleArray(baseConfig.positions);
+      return shuffleArray(baseConfig.positions);
+    };
+    const buildFallbackPositions = () => {
+      if (shouldTrack) return buildDerangedPositions(baseConfig.positions) ?? buildRandomPositions();
+      return buildRandomPositions();
     };
 
     const isHistoryBlocked = (positions: Position[]) => {
@@ -739,7 +899,10 @@ const App: React.FC = () => {
       return shouldTrack && (hasForbiddenPair || hasForbiddenLayout);
     };
 
-    const buildCandidateWithBacktracking = (requireHistoryClear: boolean): Position[] | null => {
+    const buildCandidateWithBacktracking = (
+      requireHistoryClear: boolean,
+      requireSeatChange: boolean,
+    ): Position[] | null => {
       if (!compiledRules.hasHardRules) return null;
 
       const preferredSeatIndices = options.balanceGender
@@ -770,17 +933,24 @@ const App: React.FC = () => {
       const usedSeats = new Set<number>();
 
       const search = (orderIndex: number): boolean => {
+        if (isSearchTimedOut()) return false;
+        backtrackNodeCount += 1;
+        if (backtrackNodeCount > SHUFFLE_BACKTRACK_NODE_LIMIT) return false;
+
         if (orderIndex >= studentOrder.length) {
           const positions = seatAssignments.map((seatIndex) => baseConfig.positions[seatIndex!]);
           if (isSameLayout(positions, baseConfig.positions)) return false;
+          if (requireSeatChange && countStudentsKeepingSeat(positions) > 0) return false;
           if (requireHistoryClear && isHistoryBlocked(positions)) return false;
           return true;
         }
 
         const studentIndex = studentOrder[orderIndex];
         const preferredSeatIndex = preferredSeatIndices[studentIndex];
+        const currentSeatIndex = compiledRules.seatIndexByKey.get(createSeatKey(baseConfig.positions[studentIndex]));
         const candidates = shuffleArray(compiledRules.allowedSeatIndicesByStudent[studentIndex])
           .filter((seatIndex) => !usedSeats.has(seatIndex))
+          .filter((seatIndex) => !requireSeatChange || currentSeatIndex === undefined || seatIndex !== currentSeatIndex)
           .sort((a, b) => {
             const aPreferred = a === preferredSeatIndex ? 1 : 0;
             const bPreferred = b === preferredSeatIndex ? 1 : 0;
@@ -831,52 +1001,57 @@ const App: React.FC = () => {
     if (compiledRules.hasHardRules) {
       const strictAttempts = Math.max(40, Math.floor(maxAttempts / 8));
       for (let attempt = 0; attempt < strictAttempts; attempt += 1) {
-        const positions = buildCandidateWithBacktracking(shouldTrack);
+        if (isSearchTimedOut()) break;
+        const positions = buildCandidateWithBacktracking(shouldTrack, shouldTrack);
         if (positions) return { positions, status: 'all' };
       }
 
       if (shouldTrack) {
         for (let attempt = 0; attempt < strictAttempts; attempt += 1) {
-          const positions = buildCandidateWithBacktracking(false);
+          if (isSearchTimedOut()) break;
+          const positions = buildCandidateWithBacktracking(false, true);
           if (positions) return { positions, status: 'history_relaxed' };
         }
       }
     }
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const shuffled = options.balanceGender
-        ? buildGenderBalancedPositions(baseConfig)
-        : shuffleArray(baseConfig.positions);
+      if (isSearchTimedOut()) break;
+      const shuffled = buildRandomPositions();
 
       if (shouldTrack && seen.has(createLayoutSignature({ ...baseConfig, positions: shuffled }))) continue;
       if (isSameLayout(shuffled, baseConfig.positions)) continue;
 
       const shuffledSignature = createLayoutSignature({ ...baseConfig, positions: shuffled });
       if (shouldTrack) seen.add(shuffledSignature);
+      const unchangedSeatCount = countStudentsKeepingSeat(shuffled);
       const blockedByHistory = isHistoryBlocked(shuffled);
       const historyPenalty = blockedByHistory ? 1 : 0;
       const currentRulePenalty = buildRulePenalty(shuffled, compiledRules);
       const genderPenalty = options.balanceGender ? buildGenderPenalty(shuffled, baseConfig.students) : 0;
 
-      if (currentRulePenalty === 0 && !blockedByHistory) {
+      if (currentRulePenalty === 0 && unchangedSeatCount === 0 && !blockedByHistory) {
         return { positions: shuffled, status: 'all' };
       }
 
       if (bestFallback === null || currentRulePenalty < bestRulePenalty || (
-        currentRulePenalty === bestRulePenalty && historyPenalty < bestHistoryPenalty
+        currentRulePenalty === bestRulePenalty && unchangedSeatCount < bestUnchangedSeatCount
       ) || (
-        currentRulePenalty === bestRulePenalty && historyPenalty === bestHistoryPenalty && genderPenalty < bestGenderPenalty
+        currentRulePenalty === bestRulePenalty && unchangedSeatCount === bestUnchangedSeatCount && historyPenalty < bestHistoryPenalty
+      ) || (
+        currentRulePenalty === bestRulePenalty && unchangedSeatCount === bestUnchangedSeatCount && historyPenalty === bestHistoryPenalty && genderPenalty < bestGenderPenalty
       )) {
         bestFallback = shuffled;
         bestRulePenalty = currentRulePenalty;
+        bestUnchangedSeatCount = unchangedSeatCount;
         bestHistoryPenalty = historyPenalty;
         bestGenderPenalty = genderPenalty;
       }
     }
 
     return {
-      positions: bestFallback ?? shuffleArray(baseConfig.positions),
-      status: bestRulePenalty === 0 ? 'history_relaxed' : 'rules_relaxed',
+      positions: bestFallback ?? buildFallbackPositions(),
+      status: bestRulePenalty === 0 && bestUnchangedSeatCount === 0 ? 'history_relaxed' : 'rules_relaxed',
     };
   };
   
@@ -887,6 +1062,10 @@ const App: React.FC = () => {
   const shuffleStartLockRef = useRef(false);
   const shuffleIntervalRef = useRef<number | null>(null);
   const movementIntervalRef = useRef<number | null>(null);
+  const shufflePreparationTimerRef = useRef<number | null>(null);
+  const shufflePreparationPromiseRef = useRef<Promise<PreparedShuffleResult> | null>(null);
+  const preparedShuffleResultRef = useRef<PreparedShuffleResult | null>(null);
+  const shufflePreparationTokenRef = useRef(0);
   const layoutContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -899,10 +1078,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     setShuffleSettings((prev) => {
-      const next = sanitizeShuffleSettings(prev, config.students);
+      const next = sanitizeShuffleSettings(prev, config.students, config.positions);
       return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
     });
-  }, [config.students]);
+  }, [config.students, config.positions]);
 
   useEffect(() => {
     try {
@@ -952,12 +1131,31 @@ const App: React.FC = () => {
       clearInterval(movementIntervalRef.current);
       movementIntervalRef.current = null;
     }
+    if (shufflePreparationTimerRef.current !== null) {
+      clearTimeout(shufflePreparationTimerRef.current);
+      shufflePreparationTimerRef.current = null;
+    }
+    countdownEndTimeRef.current = null;
+    shufflePreparationPromiseRef.current = null;
+    preparedShuffleResultRef.current = null;
+  };
+
+  const stopCountdownTimers = () => {
+    if (countdownTimerRef.current !== null) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (countdownPollTimerRef.current !== null) {
+      clearInterval(countdownPollTimerRef.current);
+      countdownPollTimerRef.current = null;
+    }
     countdownEndTimeRef.current = null;
   };
 
   const handleShuffleStart = useCallback(() => {
     if (shuffleStartLockRef.current || isShuffling || countdown !== null) return;
     shuffleStartLockRef.current = true;
+    shufflePreparationTokenRef.current += 1;
     
     stopAllTimers();
     setIsShuffling(true);
@@ -974,27 +1172,74 @@ const App: React.FC = () => {
     const currentStudents = config.students;
     const currentPositions = config.positions;
     const isCoarsePointer = isCoarsePointerDevice;
+    const currentPreparationToken = shufflePreparationTokenRef.current;
     countdownEndTimeRef.current = Date.now() + 5000;
     let hasFinalized = false;
 
-    const finalizeShuffle = () => {
+    const computeShuffleResult = (): PreparedShuffleResult => buildNonDuplicateShufflePositions({
+      ...config,
+      positions: currentPositions,
+    }, {
+      avoidDuplicate: shuffleSettings.avoidDuplicate,
+      balanceGender: shuffleSettings.genderBalance,
+      settings: shuffleSettings,
+    });
+
+    const scheduleShufflePreparation = () => {
+      if (shufflePreparationTimerRef.current !== null) {
+        clearTimeout(shufflePreparationTimerRef.current);
+      }
+
+      shufflePreparationTimerRef.current = window.setTimeout(() => {
+        shufflePreparationTimerRef.current = null;
+        if (shufflePreparationTokenRef.current !== currentPreparationToken) return;
+
+        const preparationPromise = new Promise<PreparedShuffleResult>((resolve) => {
+          window.setTimeout(() => {
+            const result = computeShuffleResult();
+            if (shufflePreparationTokenRef.current === currentPreparationToken) {
+              preparedShuffleResultRef.current = result;
+            }
+            resolve(result);
+          }, 0);
+        });
+
+        shufflePreparationPromiseRef.current = preparationPromise;
+      }, isCoarsePointer ? 420 : 260);
+    };
+
+    const finalizeShuffle = async () => {
       if (hasFinalized) return;
       hasFinalized = true;
+      stopCountdownTimers();
+
+      let result = preparedShuffleResultRef.current;
+      if (!result) {
+        if (shufflePreparationPromiseRef.current === null) {
+          shufflePreparationPromiseRef.current = new Promise<PreparedShuffleResult>((resolve) => {
+            window.setTimeout(() => {
+              const computedResult = computeShuffleResult();
+              if (shufflePreparationTokenRef.current === currentPreparationToken) {
+                preparedShuffleResultRef.current = computedResult;
+              }
+              resolve(computedResult);
+            }, 0);
+          });
+        }
+
+        result = await shufflePreparationPromiseRef.current;
+      }
+
+      if (shufflePreparationTokenRef.current !== currentPreparationToken) return;
+
       shuffleStartLockRef.current = false;
       stopAllTimers();
-      const { positions: shuffledPositions, status } = buildNonDuplicateShufflePositions({
-        ...config,
-        positions: currentPositions,
-      }, {
-        avoidDuplicate: shuffleSettings.avoidDuplicate,
-        balanceGender: shuffleSettings.genderBalance,
-        settings: shuffleSettings,
-      });
+      const { positions: shuffledPositions, status } = result;
       if (status === 'history_relaxed') {
-        alert('규칙은 지켰지만 이전 기록과 다른 배치를 찾지 못해 중복 허용 배치로 적용했어요.');
+        alert('학생 자리는 모두 바뀌었지만 저장된 기록까지 모두 피하는 배치를 찾지 못해 기록 중복을 허용한 배치로 적용했어요.');
       }
       if (status === 'rules_relaxed') {
-        alert('현재 자리 구조로는 모든 규칙을 동시에 만족하는 배치를 찾지 못해 가장 가까운 배치로 적용했어요.');
+        alert('현재 자리 구조와 설정으로는 모든 학생의 자리를 바꾸면서 규칙까지 함께 만족하는 배치를 찾지 못해 가장 가까운 배치로 적용했어요.');
       }
       setConfig(prevConfig => ({ ...prevConfig, positions: shuffledPositions }));
       setIsShuffling(false);
@@ -1008,11 +1253,18 @@ const App: React.FC = () => {
       setTimeout(() => setShowCelebration(false), 2500);
     };
 
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (shufflePreparationTokenRef.current !== currentPreparationToken) return;
+        scheduleShufflePreparation();
+      });
+    });
+
     countdownTimerRef.current = window.setInterval(() => {
       setCountdown(prev => {
         if (prev === null) return null;
         if (prev <= 1) {
-          finalizeShuffle();
+          void finalizeShuffle();
           return null;
         }
         
@@ -1031,7 +1283,7 @@ const App: React.FC = () => {
       const remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
 
       if (remaining <= 0) {
-        finalizeShuffle();
+        void finalizeShuffle();
         return;
       }
       setCountdown(prev => (prev === null || prev === remaining ? prev : remaining));
@@ -1039,7 +1291,7 @@ const App: React.FC = () => {
 
     // 모바일 성능을 위해 업데이트 주기를 150ms -> 200ms로 조정
     shuffleIntervalRef.current = window.setInterval(() => {
-      setDisplayStudents(prev => [...prev].sort(() => Math.random() - 0.5));
+      setDisplayStudents(prev => shuffleArray(prev));
       try {
         if (!isCoarsePointer || Math.random() > 0.5) {
           audioService.playShuffleTick();
@@ -1469,6 +1721,34 @@ const App: React.FC = () => {
     }
     setView('settings-shuffle');
     setEditMode('none');
+  };
+
+  const handleSettingsTabClick = () => {
+    if (view === 'settings-shuffle') {
+      resetHiddenShuffleUnlock();
+      handleEnterSettings();
+      return;
+    }
+
+    const nextTapCount = hiddenShuffleUnlockTapCountRef.current + 1;
+    hiddenShuffleUnlockTapCountRef.current = nextTapCount;
+
+    if (nextTapCount >= SECRET_SHUFFLE_UNLOCK_TAPS) {
+      resetHiddenShuffleUnlock();
+      handleEnterShuffleSettings();
+      return;
+    }
+
+    audioService.playClick();
+
+    if (hiddenShuffleUnlockTimerRef.current !== null) {
+      window.clearTimeout(hiddenShuffleUnlockTimerRef.current);
+    }
+
+    hiddenShuffleUnlockTimerRef.current = window.setTimeout(() => {
+      hiddenShuffleUnlockTapCountRef.current = 0;
+      hiddenShuffleUnlockTimerRef.current = null;
+    }, SECRET_SHUFFLE_UNLOCK_WINDOW_MS);
   };
 
   const handleExitSettings = () => {
@@ -1967,38 +2247,30 @@ const App: React.FC = () => {
           <div className="w-full flex flex-col items-center bg-[#fdfbf7] overflow-y-auto custom-scrollbar pt-6 lg:pt-10 pb-20">
             <div className="w-full max-w-5xl px-4 lg:px-8 flex flex-col gap-6 lg:gap-8">
               <div className="w-full border-2 border-amber-100 rounded-[2rem] p-4 lg:p-6 bg-white shadow-xl shadow-amber-50/50">
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   <button
-                    onClick={handleEnterSettings}
+                    onClick={handleSettingsTabClick}
                     className={`w-full px-4 py-3 lg:py-4 rounded-2xl border-2 font-bold text-sm lg:text-base transition-all ${
-                      view === 'settings-students'
+                      view === 'settings-students' || view === 'settings-shuffle'
                         ? 'bg-amber-50 border-amber-300 text-amber-700 shadow-sm'
                         : 'bg-white border-stone-200 text-stone-500 hover:border-amber-200 hover:text-amber-600'
                     }`}
                   >
                     명단 관리
                   </button>
-                  <button
-                    onClick={handleEnterShuffleSettings}
-                    className={`w-full px-4 py-3 lg:py-4 rounded-2xl border-2 font-bold text-sm lg:text-base transition-all ${
-                      view === 'settings-shuffle'
-                        ? 'bg-amber-50 border-amber-300 text-amber-700 shadow-sm'
-                        : 'bg-white border-stone-200 text-stone-500 hover:border-amber-200 hover:text-amber-600'
-                    }`}
-                  >
-                    자리 섞기
-                  </button>
                 </div>
               </div>
 
-              {view === 'settings-students' ? (
-                <SettingsView students={editingStudents} onChange={setEditingStudents} />
-              ) : (
+              {view === 'settings-shuffle' ? (
                 <ShuffleSettingsView
                   settings={shuffleSettings}
                   students={config.students}
+                  positions={config.positions}
+                  perspective={layoutPerspective}
                   onChange={setShuffleSettings}
                 />
+              ) : (
+                <SettingsView students={editingStudents} onChange={setEditingStudents} />
               )}
 
               <button
@@ -2578,10 +2850,12 @@ const SettingsView: React.FC<SettingsViewProps> = ({ students, onChange }) => {
 interface ShuffleSettingsViewProps {
   settings: ShuffleSettings;
   students: Student[];
+  positions: Position[];
+  perspective: LayoutPerspective;
   onChange: (settings: ShuffleSettings) => void;
 }
 
-const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, onChange }) => {
+const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, positions, perspective, onChange }) => {
   const studentOptions = useMemo(() => {
     const totalByName = new Map<string, number>();
     const seenByName = new Map<string, number>();
@@ -2602,9 +2876,75 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
   }, [students]);
 
   const labelByStudentId = useMemo(() => new Map(studentOptions.map((option) => [option.id, option.label])), [studentOptions]);
+  const seatLayoutMeta = useMemo(() => {
+    const uniquePositions = new Map<string, Position>();
+
+    positions.forEach((position) => {
+      const key = createSeatKey(position);
+      if (!uniquePositions.has(key)) {
+        uniquePositions.set(key, position);
+      }
+    });
+
+    const rawPositions = [...uniquePositions.values()];
+    const rs = rawPositions.map((position) => position.r);
+    const cs = rawPositions.map((position) => position.c);
+    const range = {
+      startR: 0,
+      endR: rs.length > 0 ? Math.max(...rs) : 0,
+      startC: cs.length > 0 ? Math.min(...cs) : 0,
+      endC: cs.length > 0 ? Math.max(...cs) : 0,
+    };
+    const displayedRows = Array.from({ length: range.endR - range.startR + 1 }, (_, index) => range.startR + index);
+    const displayedCols = Array.from({ length: range.endC - range.startC + 1 }, (_, index) => range.startC + index);
+
+    if (perspective === 'teacher') {
+      displayedRows.reverse();
+      displayedCols.reverse();
+    }
+
+    const visualRowNumberByValue = new Map(displayedRows.map((value, index) => [value, index + 1]));
+    const visualColNumberByValue = new Map(displayedCols.map((value, index) => [value, index + 1]));
+    const sortedPositions = [...rawPositions].sort((a, b) => {
+      const rowDiff = (visualRowNumberByValue.get(a.r) || 0) - (visualRowNumberByValue.get(b.r) || 0);
+      if (rowDiff !== 0) return rowDiff;
+      return (visualColNumberByValue.get(a.c) || 0) - (visualColNumberByValue.get(b.c) || 0);
+    });
+    const seatLabelByKey = new Map(sortedPositions.map((position) => [
+      createSeatKey(position),
+      `${visualRowNumberByValue.get(position.r)}행 ${visualColNumberByValue.get(position.c)}열`,
+    ]));
+    const seatKeySet = new Set(sortedPositions.map((position) => createSeatKey(position)));
+
+    return {
+      sortedPositions,
+      displayedRows,
+      displayedCols,
+      seatLabelByKey,
+      seatKeySet,
+    };
+  }, [perspective, positions]);
+  const seatOptions = useMemo(() => seatLayoutMeta.sortedPositions.map((position) => ({
+    key: createSeatKey(position),
+    label: seatLayoutMeta.seatLabelByKey.get(createSeatKey(position)) || createSeatKey(position),
+  })), [seatLayoutMeta]);
+  const fixedSeatRuleBySeatKey = useMemo(() => {
+    const map = new Map<string, FixedSeatRule>();
+    settings.fixedSeats.forEach((rule) => {
+      if (rule.seatKey) {
+        map.set(rule.seatKey, rule);
+      }
+    });
+    return map;
+  }, [settings.fixedSeats]);
+
+  const applySettingsChange = useCallback((nextSettings: ShuffleSettings) => {
+    onChange(sanitizeShuffleSettings(nextSettings, students, positions));
+  }, [onChange, positions, students]);
+  const canAddFixedSeatRule = settings.fixedSeats.length < Math.min(studentOptions.length, seatOptions.length);
 
   const updateListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', nextNames: string[]) => {
-    onChange(sanitizeShuffleSettings({ ...settings, [key]: nextNames }, students));
+    applySettingsChange({ ...settings, [key]: nextNames });
   };
 
   const addNameToListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', studentId: string) => {
@@ -2616,9 +2956,42 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
     updateListRule(key, settings[key].filter((item) => item !== studentId));
   };
 
+  const addFixedSeatRule = () => {
+    const usedStudentIds = new Set(settings.fixedSeats.map((rule) => rule.studentId));
+    const usedSeatKeys = new Set(settings.fixedSeats.map((rule) => rule.seatKey));
+    const nextStudentId = studentOptions.find((option) => !usedStudentIds.has(option.id))?.id;
+    const nextSeatKey = seatOptions.find((option) => !usedSeatKeys.has(option.key))?.key;
+
+    if (!nextStudentId || !nextSeatKey) return;
+
+    applySettingsChange({
+      ...settings,
+      fixedSeats: [
+        ...settings.fixedSeats,
+        { id: createRuleId('fixed-seat-rule'), studentId: nextStudentId, seatKey: nextSeatKey },
+      ],
+    });
+  };
+
+  const updateFixedSeatRule = (id: string, field: 'studentId' | 'seatKey', value: string) => {
+    applySettingsChange({
+      ...settings,
+      fixedSeats: settings.fixedSeats.map((rule) => (
+        rule.id === id ? { ...rule, [field]: value } : rule
+      )),
+    });
+  };
+
+  const removeFixedSeatRule = (id: string) => {
+    applySettingsChange({
+      ...settings,
+      fixedSeats: settings.fixedSeats.filter((rule) => rule.id !== id),
+    });
+  };
+
   const addForbiddenPairRule = () => {
     if (studentOptions.length < 2) return;
-    onChange({
+    applySettingsChange({
       ...settings,
       forbiddenPairs: [
         ...settings.forbiddenPairs,
@@ -2641,11 +3014,11 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
         return nextRule;
       }),
     };
-    onChange(sanitizeShuffleSettings(nextSettings, students));
+    applySettingsChange(nextSettings);
   };
 
   const removeForbiddenPairRule = (id: string) => {
-    onChange({
+    applySettingsChange({
       ...settings,
       forbiddenPairs: settings.forbiddenPairs.filter((rule) => rule.id !== id),
     });
@@ -2653,7 +3026,7 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
 
   const addForbiddenGroupRule = () => {
     if (studentOptions.length < 2) return;
-    onChange({
+    applySettingsChange({
       ...settings,
       forbiddenGroups: [...settings.forbiddenGroups, { id: createRuleId('group-rule'), studentIds: [studentOptions[0].id, studentOptions[1].id] }],
     });
@@ -2661,7 +3034,7 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
 
   const addNameToGroupRule = (id: string, studentId: string) => {
     if (!studentId) return;
-    onChange({
+    applySettingsChange({
       ...settings,
       forbiddenGroups: settings.forbiddenGroups.map((rule) => (
         rule.id === id ? { ...rule, studentIds: [...new Set([...rule.studentIds, studentId])] } : rule
@@ -2670,16 +3043,16 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
   };
 
   const removeNameFromGroupRule = (id: string, studentId: string) => {
-    onChange(sanitizeShuffleSettings({
+    applySettingsChange({
       ...settings,
       forbiddenGroups: settings.forbiddenGroups.map((rule) => (
         rule.id === id ? { ...rule, studentIds: rule.studentIds.filter((item) => item !== studentId) } : rule
       )),
-    }, students));
+    });
   };
 
   const removeForbiddenGroupRule = (id: string) => {
-    onChange({
+    applySettingsChange({
       ...settings,
       forbiddenGroups: settings.forbiddenGroups.filter((rule) => rule.id !== id),
     });
@@ -2705,6 +3078,103 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
     );
   };
 
+  const renderFixedSeatMap = (rule: FixedSeatRule) => {
+    const selectedStudentLabel = labelByStudentId.get(rule.studentId) || '학생';
+    const selectedSeatLabel = seatLayoutMeta.seatLabelByKey.get(rule.seatKey) || '자리 선택';
+
+    if (seatLayoutMeta.displayedRows.length === 0 || seatLayoutMeta.displayedCols.length === 0) {
+      return <div className="text-sm text-stone-400">좌석 정보가 없습니다.</div>;
+    }
+
+    return (
+      <div className="rounded-[1.5rem] border border-amber-100 bg-stone-50/80 p-3 lg:p-4">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <span className="px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-black">
+            {selectedStudentLabel}
+          </span>
+          <span className="px-3 py-1 rounded-full bg-white border border-stone-200 text-stone-500 text-xs font-black">
+            {selectedSeatLabel}
+          </span>
+        </div>
+        <div className="mx-auto mb-4 w-full max-w-[260px] rounded-xl border-[6px] border-[#8b5a2b] bg-[#355c52] py-2 text-center shadow-[0_4px_0_#6d4520,0_12px_20px_-12px_rgba(0,0,0,0.35)]">
+          <span className="font-jua text-sm tracking-[0.28em] text-white/90 ml-[0.28em]">칠판</span>
+        </div>
+        <div className="overflow-x-auto pb-1">
+          <div
+            className="grid gap-2.5 min-w-max mx-auto"
+            style={{ gridTemplateColumns: `repeat(${seatLayoutMeta.displayedCols.length}, 76px)` }}
+          >
+            {seatLayoutMeta.displayedRows.flatMap((rowValue) => seatLayoutMeta.displayedCols.map((colValue) => {
+              const seatKey = `${rowValue},${colValue}`;
+              if (!seatLayoutMeta.seatKeySet.has(seatKey)) {
+                return <div key={`blank-${seatKey}`} className="aspect-[1.25/1] opacity-0 pointer-events-none" />;
+              }
+
+              const assignedRule = fixedSeatRuleBySeatKey.get(seatKey);
+              const isSelected = rule.seatKey === seatKey;
+              const assignedToOtherRule = assignedRule !== undefined && assignedRule.id !== rule.id;
+              const occupiedLabel = assignedToOtherRule
+                ? (labelByStudentId.get(assignedRule.studentId) || '다른 학생')
+                : '선택 가능';
+
+              return (
+                <button
+                  key={seatKey}
+                  type="button"
+                  onClick={() => {
+                    if (assignedToOtherRule) return;
+                    updateFixedSeatRule(rule.id, 'seatKey', seatKey);
+                  }}
+                  disabled={assignedToOtherRule}
+                  className={`relative aspect-[1.25/1] transition-all ${
+                    assignedToOtherRule
+                      ? 'cursor-not-allowed opacity-75'
+                      : 'hover:-translate-y-1 active:translate-y-0'
+                  } ${isSelected ? 'scale-[1.03]' : ''}`}
+                >
+                  <div className={`absolute inset-0 rounded-[1rem] border-t border-[#ffe4b5] overflow-hidden shadow-[0_4px_0_#d6b076,0_12px_18px_-12px_rgba(0,0,0,0.35)] ${
+                    isSelected
+                      ? 'bg-amber-200'
+                      : assignedToOtherRule
+                        ? 'bg-stone-300'
+                        : 'bg-[#f3d09a]'
+                  }`}>
+                    <div className="absolute inset-0 opacity-10 bg-[linear-gradient(45deg,transparent_25%,#000_25%,#000_50%,transparent_50%,transparent_75%,#000_75%,#000_100%)] [background-size:4px_4px]"></div>
+                    <div className={`absolute inset-[10%] rounded-[0.85rem] border flex flex-col items-center justify-center px-1.5 text-center ${
+                      isSelected
+                        ? 'bg-amber-50 border-amber-200 ring-2 ring-amber-400'
+                        : assignedToOtherRule
+                          ? 'bg-stone-100 border-stone-200'
+                          : 'bg-white border-stone-100'
+                    }`}>
+                      <span className="text-[10px] font-black text-stone-400 leading-none">
+                        {seatLayoutMeta.seatLabelByKey.get(seatKey) || seatKey}
+                      </span>
+                      <span className={`font-jua text-xs leading-tight mt-1 w-full truncate ${
+                        isSelected
+                          ? 'text-amber-700'
+                          : assignedToOtherRule
+                            ? 'text-stone-500'
+                            : 'text-stone-700'
+                      }`}>
+                        {isSelected ? selectedStudentLabel : occupiedLabel}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              );
+            }))}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 mt-4 text-[11px] font-black text-stone-500">
+          <span className="px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700">선택한 자리</span>
+          <span className="px-2.5 py-1 rounded-full bg-white border border-stone-200">선택 가능</span>
+          <span className="px-2.5 py-1 rounded-full bg-stone-100 border border-stone-200 text-stone-500">다른 고정 자리</span>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="w-full max-w-5xl px-4 lg:px-8 pb-16 flex flex-col gap-6 lg:gap-8 animate-in fade-in duration-500">
       <div className="flex flex-col lg:flex-row items-center justify-between border-2 border-amber-100 rounded-[2rem] lg:rounded-[2.5rem] p-6 lg:p-8 bg-white shadow-xl shadow-amber-50/50 gap-6">
@@ -2726,7 +3196,7 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
             <p className="text-xs lg:text-sm text-stone-500">남녀 짝 배치 우선</p>
           </div>
           <button
-            onClick={() => onChange({ ...settings, genderBalance: !settings.genderBalance })}
+            onClick={() => applySettingsChange({ ...settings, genderBalance: !settings.genderBalance })}
             className={`px-4 lg:px-5 py-2 rounded-xl font-black text-sm lg:text-base transition-all border-2 ${settings.genderBalance ? 'bg-emerald-50 border-emerald-300 text-emerald-600' : 'bg-white border-stone-200 text-stone-500'}`}
           >
             {settings.genderBalance ? 'ON' : 'OFF'}
@@ -2738,10 +3208,10 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
         <div className="flex items-center justify-between gap-4">
           <div>
             <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">중복 방지</h3>
-            <p className="text-xs lg:text-sm text-stone-500">저장된 배치/짝과 중복 피하기</p>
+            <p className="text-xs lg:text-sm text-stone-500">이전 자리와 저장된 배치/짝 중복 피하기</p>
           </div>
           <button
-            onClick={() => onChange({ ...settings, avoidDuplicate: !settings.avoidDuplicate })}
+            onClick={() => applySettingsChange({ ...settings, avoidDuplicate: !settings.avoidDuplicate })}
             className={`px-4 lg:px-5 py-2 rounded-xl font-black text-sm lg:text-base transition-all border-2 ${settings.avoidDuplicate ? 'bg-emerald-50 border-emerald-300 text-emerald-600' : 'bg-white border-stone-200 text-stone-500'}`}
           >
             {settings.avoidDuplicate ? 'ON' : 'OFF'}
@@ -2750,6 +3220,61 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
+        <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4 xl:col-span-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">자리 고정</h3>
+              <p className="text-xs lg:text-sm text-stone-500">특정 학생을 원하는 좌석에 고정</p>
+            </div>
+            <button
+              onClick={addFixedSeatRule}
+              disabled={!canAddFixedSeatRule}
+              className={`px-4 py-2 rounded-xl border-2 font-black text-sm transition-all ${
+                canAddFixedSeatRule
+                  ? 'border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100'
+                  : 'border-stone-200 bg-stone-100 text-stone-400 cursor-not-allowed'
+              }`}
+            >
+              추가
+            </button>
+          </div>
+          {settings.fixedSeats.length === 0 ? (
+            <div className="text-sm text-stone-400">고정 없음</div>
+          ) : (
+            <div className="space-y-3">
+              {settings.fixedSeats.map((rule) => (
+                <div key={rule.id} className="rounded-[1.75rem] border border-stone-200 bg-white p-4 lg:p-5 flex flex-col gap-4">
+                  <div className="flex flex-col lg:flex-row gap-2 lg:items-center">
+                    <select
+                      value={rule.studentId}
+                      onChange={(e) => updateFixedSeatRule(rule.id, 'studentId', e.target.value)}
+                      className="w-full lg:max-w-xs border-2 border-stone-200 rounded-xl px-3 py-3 bg-white font-bold text-stone-700"
+                    >
+                      <option value="">학생</option>
+                      {studentOptions
+                        .filter((option) => option.id === rule.studentId || !settings.fixedSeats.some((otherRule) => otherRule.id !== rule.id && otherRule.studentId === option.id))
+                        .map((option) => <option key={`${rule.id}-${option.id}-student`} value={option.id}>{option.label}</option>)}
+                    </select>
+                    <div className="flex items-center gap-2 lg:ml-auto">
+                      <span className="px-3 py-2 rounded-xl border border-stone-200 bg-stone-50 text-xs font-black text-stone-500">
+                        {seatLayoutMeta.seatLabelByKey.get(rule.seatKey) || '자리 선택'}
+                      </span>
+                      <button
+                        onClick={() => removeFixedSeatRule(rule.id)}
+                        className="h-12 px-4 rounded-xl border-2 border-rose-200 text-rose-500 hover:bg-rose-50"
+                      >
+                        <span className="sr-only">규칙 삭제</span>
+                        X
+                      </button>
+                    </div>
+                  </div>
+                  {renderFixedSeatMap(rule)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
           <div className="flex items-center justify-between gap-3">
             <div>
