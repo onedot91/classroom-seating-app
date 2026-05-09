@@ -32,6 +32,27 @@ type ShuffleSettings = {
   noSoloSeat: string[];
 };
 
+type LegacyForbiddenPairRule = Partial<ForbiddenPairRule> & {
+  first?: string;
+  second?: string;
+};
+
+type LegacyStudentGroupRule = Partial<StudentGroupRule> & {
+  names?: string[];
+};
+
+type LegacyFixedSeatRule = Partial<FixedSeatRule> & {
+  seat?: Partial<Position>;
+  r?: number;
+  c?: number;
+};
+
+type SavedShuffleSettings = Omit<Partial<ShuffleSettings>, 'forbiddenPairs' | 'forbiddenGroups' | 'fixedSeats'> & {
+  forbiddenPairs?: LegacyForbiddenPairRule[];
+  forbiddenGroups?: LegacyStudentGroupRule[];
+  fixedSeats?: LegacyFixedSeatRule[];
+};
+
 type ShuffleResultStatus = 'all' | 'history_relaxed' | 'rules_relaxed';
 type PreparedShuffleResult = { positions: Position[]; status: ShuffleResultStatus };
 
@@ -326,13 +347,9 @@ const App: React.FC = () => {
     if (!saved) return DEFAULT_SHUFFLE_SETTINGS;
 
     try {
-      const parsed = JSON.parse(saved) as Partial<ShuffleSettings> & {
-        forbiddenPairs?: Array<Partial<ForbiddenPairRule> & { first?: string; second?: string }>;
-        forbiddenGroups?: Array<Partial<StudentGroupRule> & { names?: string[] }>;
-        fixedSeats?: Array<Partial<FixedSeatRule> & { seat?: Partial<Position>; r?: number; c?: number }>;
-      };
+      const parsed = JSON.parse(saved) as SavedShuffleSettings;
 
-      const resolveFixedSeatKey = (rule: Partial<FixedSeatRule> & { seat?: Partial<Position>; r?: number; c?: number }) => {
+      const resolveFixedSeatKey = (rule: LegacyFixedSeatRule) => {
         if (typeof rule?.seatKey === 'string') return rule.seatKey;
         if (typeof rule?.seat?.r === 'number' && typeof rule?.seat?.c === 'number') {
           return createSeatKey({ r: rule.seat.r, c: rule.seat.c });
@@ -594,13 +611,15 @@ const App: React.FC = () => {
     });
 
     const allowedSeatIndicesByStudent = baseConfig.students.map((_, studentIndex) => {
+      const fixedSeatIndex = fixedSeatIndexByStudent.get(studentIndex);
+      if (fixedSeatIndex !== undefined) return [fixedSeatIndex];
+
       return baseConfig.positions
         .map((seat, seatIndex) => ({ seat, seatIndex }))
         .filter(({ seat, seatIndex }) => {
           if (frontOnlyStudents.has(studentIndex) && seat.r !== frontRow) return false;
           if (noBackRowStudents.has(studentIndex) && seat.r === backRow) return false;
           if (noSoloSeatStudents.has(studentIndex) && !seatsWithSideNeighbor.has(seatIndex)) return false;
-          if (fixedSeatIndexByStudent.has(studentIndex) && fixedSeatIndexByStudent.get(studentIndex) !== seatIndex) return false;
           return true;
         })
         .map(({ seatIndex }) => seatIndex);
@@ -872,6 +891,7 @@ const App: React.FC = () => {
     const countStudentsKeepingSeat = (positions: Position[]) => {
       if (!shouldTrack || positions.length !== baseConfig.positions.length) return 0;
       return positions.reduce((count, seat, studentIndex) => {
+        if (isStudentFixedToCurrentSeat(studentIndex)) return count;
         const currentSeat = baseConfig.positions[studentIndex];
         if (currentSeat && currentSeat.r === seat.r && currentSeat.c === seat.c) {
           return count + 1;
@@ -881,13 +901,50 @@ const App: React.FC = () => {
     };
 
     const isSearchTimedOut = () => getNow() - searchStartedAt >= SHUFFLE_SEARCH_DEADLINE_MS;
+    const enforceFixedSeats = (positions: Position[]) => {
+      if (compiledRules.fixedSeatIndexByStudent.size === 0) return positions;
+
+      const fixedSeatIndices = new Set(compiledRules.fixedSeatIndexByStudent.values());
+      const assignedSeatIndices = Array<number | null>(baseConfig.students.length).fill(null);
+
+      compiledRules.fixedSeatIndexByStudent.forEach((seatIndex, studentIndex) => {
+        assignedSeatIndices[studentIndex] = seatIndex;
+      });
+
+      const orderedCandidateSeatIndices: number[] = [];
+      const usedCandidateSeatIndices = new Set<number>();
+
+      positions.forEach((seat) => {
+        const seatIndex = compiledRules.seatIndexByKey.get(createSeatKey(seat));
+        if (seatIndex === undefined || fixedSeatIndices.has(seatIndex) || usedCandidateSeatIndices.has(seatIndex)) return;
+        orderedCandidateSeatIndices.push(seatIndex);
+        usedCandidateSeatIndices.add(seatIndex);
+      });
+
+      baseConfig.positions.forEach((_, seatIndex) => {
+        if (fixedSeatIndices.has(seatIndex) || usedCandidateSeatIndices.has(seatIndex)) return;
+        orderedCandidateSeatIndices.push(seatIndex);
+      });
+
+      let nextSeatOffset = 0;
+      assignedSeatIndices.forEach((seatIndex, studentIndex) => {
+        if (seatIndex !== null) return;
+        assignedSeatIndices[studentIndex] = orderedCandidateSeatIndices[nextSeatOffset] ?? studentIndex;
+        nextSeatOffset += 1;
+      });
+
+      return assignedSeatIndices.map((seatIndex) => baseConfig.positions[seatIndex!]);
+    };
     const buildRandomPositions = () => {
-      if (options.balanceGender) return buildGenderBalancedPositions(baseConfig);
-      if (shouldTrack) return buildDerangedPositions(baseConfig.positions) ?? shuffleArray(baseConfig.positions);
-      return shuffleArray(baseConfig.positions);
+      const positions = options.balanceGender
+        ? buildGenderBalancedPositions(baseConfig)
+        : shouldTrack
+          ? buildDerangedPositions(baseConfig.positions) ?? shuffleArray(baseConfig.positions)
+          : shuffleArray(baseConfig.positions);
+      return enforceFixedSeats(positions);
     };
     const buildFallbackPositions = () => {
-      if (shouldTrack) return buildDerangedPositions(baseConfig.positions) ?? buildRandomPositions();
+      if (shouldTrack) return enforceFixedSeats(buildDerangedPositions(baseConfig.positions) ?? buildRandomPositions());
       return buildRandomPositions();
     };
 
@@ -897,6 +954,20 @@ const App: React.FC = () => {
       const hasForbiddenPair = shuffledPairSignatures.some((signature) => savedPairSignatures.has(signature));
       const hasForbiddenLayout = savedLayoutSignatures.has(shuffledSignature);
       return shouldTrack && (hasForbiddenPair || hasForbiddenLayout);
+    };
+
+    const isStudentFixedToCurrentSeat = (studentIndex: number) => {
+      const fixedSeatIndex = compiledRules.fixedSeatIndexByStudent.get(studentIndex);
+      if (fixedSeatIndex === undefined) return false;
+      const currentSeatIndex = compiledRules.seatIndexByKey.get(createSeatKey(baseConfig.positions[studentIndex]));
+      return currentSeatIndex !== undefined && fixedSeatIndex === currentSeatIndex;
+    };
+
+    const mustChangeSeat = (studentIndex: number, candidateSeatIndex: number) => {
+      if (!shouldTrack) return false;
+      if (isStudentFixedToCurrentSeat(studentIndex)) return false;
+      const currentSeatIndex = compiledRules.seatIndexByKey.get(createSeatKey(baseConfig.positions[studentIndex]));
+      return currentSeatIndex !== undefined && candidateSeatIndex === currentSeatIndex;
     };
 
     const buildCandidateWithBacktracking = (
@@ -947,10 +1018,9 @@ const App: React.FC = () => {
 
         const studentIndex = studentOrder[orderIndex];
         const preferredSeatIndex = preferredSeatIndices[studentIndex];
-        const currentSeatIndex = compiledRules.seatIndexByKey.get(createSeatKey(baseConfig.positions[studentIndex]));
         const candidates = shuffleArray(compiledRules.allowedSeatIndicesByStudent[studentIndex])
           .filter((seatIndex) => !usedSeats.has(seatIndex))
-          .filter((seatIndex) => !requireSeatChange || currentSeatIndex === undefined || seatIndex !== currentSeatIndex)
+          .filter((seatIndex) => !requireSeatChange || !mustChangeSeat(studentIndex, seatIndex))
           .sort((a, b) => {
             const aPreferred = a === preferredSeatIndex ? 1 : 0;
             const bPreferred = b === preferredSeatIndex ? 1 : 0;
@@ -2266,6 +2336,7 @@ const App: React.FC = () => {
                   settings={shuffleSettings}
                   students={config.students}
                   positions={config.positions}
+                  pairMap={config.pairMap}
                   perspective={layoutPerspective}
                   onChange={setShuffleSettings}
                 />
@@ -2851,11 +2922,13 @@ interface ShuffleSettingsViewProps {
   settings: ShuffleSettings;
   students: Student[];
   positions: Position[];
+  pairMap: Record<string, number>;
   perspective: LayoutPerspective;
   onChange: (settings: ShuffleSettings) => void;
 }
 
-const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, positions, perspective, onChange }) => {
+const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, students, positions, pairMap, perspective, onChange }) => {
+  const [activeFixedSeatRuleId, setActiveFixedSeatRuleId] = useState<string | null>(null);
   const studentOptions = useMemo(() => {
     const totalByName = new Map<string, number>();
     const seenByName = new Map<string, number>();
@@ -2937,11 +3010,264 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
     });
     return map;
   }, [settings.fixedSeats]);
+  const activeFixedSeatRule = useMemo(() => (
+    settings.fixedSeats.find((rule) => rule.id === activeFixedSeatRuleId) || settings.fixedSeats[0] || null
+  ), [activeFixedSeatRuleId, settings.fixedSeats]);
+
+  useEffect(() => {
+    if (settings.fixedSeats.length === 0) {
+      setActiveFixedSeatRuleId(null);
+      return;
+    }
+    if (!activeFixedSeatRuleId || !settings.fixedSeats.some((rule) => rule.id === activeFixedSeatRuleId)) {
+      setActiveFixedSeatRuleId(settings.fixedSeats[0].id);
+    }
+  }, [activeFixedSeatRuleId, settings.fixedSeats]);
 
   const applySettingsChange = useCallback((nextSettings: ShuffleSettings) => {
     onChange(sanitizeShuffleSettings(nextSettings, students, positions));
   }, [onChange, positions, students]);
   const canAddFixedSeatRule = settings.fixedSeats.length < Math.min(studentOptions.length, seatOptions.length);
+  const settingWarnings = useMemo(() => {
+    const warnings: string[] = [];
+    const addWarning = (message: string) => {
+      if (!warnings.includes(message)) warnings.push(message);
+    };
+
+    const seatIndexByKey = new Map(positions.map((position, index) => [createSeatKey(position), index]));
+    const rows = positions.map((position) => position.r);
+    const frontRow = rows.length > 0 ? Math.min(...rows) : 0;
+    const backRow = rows.length > 0 ? Math.max(...rows) : 0;
+    const frontSeatCount = positions.filter((position) => position.r === frontRow).length;
+    const nonBackSeatCount = positions.filter((position) => position.r !== backRow).length;
+    const sideNeighborSeatKeys = new Set<string>();
+
+    positions.forEach((position) => {
+      if (
+        seatIndexByKey.has(`${position.r},${position.c - 1}`)
+        || seatIndexByKey.has(`${position.r},${position.c + 1}`)
+      ) {
+        sideNeighborSeatKeys.add(createSeatKey(position));
+      }
+    });
+
+    const labelForStudent = (studentId: string) => labelByStudentId.get(studentId) || '학생';
+    const fixedSeatByStudentId = new Map(settings.fixedSeats.map((rule) => [rule.studentId, rule.seatKey]));
+    const pairGroupBySeatIndex = new Map<number, number>();
+
+    Object.entries(pairMap).forEach(([seatKey, pairId]) => {
+      const seatIndex = seatIndexByKey.get(seatKey);
+      if (seatIndex !== undefined) pairGroupBySeatIndex.set(seatIndex, pairId);
+    });
+
+    if (settings.frontOnly.length > frontSeatCount) {
+      addWarning(`맨 앞만 학생이 ${settings.frontOnly.length}명인데 맨 앞줄 자리는 ${frontSeatCount}개입니다.`);
+    }
+    if (settings.noBackRow.length > nonBackSeatCount) {
+      addWarning(`맨 뒤 금지 학생이 ${settings.noBackRow.length}명인데 뒷줄을 제외한 자리는 ${nonBackSeatCount}개입니다.`);
+    }
+    if (settings.noSoloSeat.length > sideNeighborSeatKeys.size) {
+      addWarning(`혼자 앉기 금지 학생이 ${settings.noSoloSeat.length}명인데 좌우 이웃이 있는 자리는 ${sideNeighborSeatKeys.size}개입니다.`);
+    }
+
+    students.forEach((student) => {
+      const allowedSeats = positions.filter((position) => {
+        const seatKey = createSeatKey(position);
+        const fixedSeatKey = fixedSeatByStudentId.get(student.id);
+        if (fixedSeatKey) return fixedSeatKey === seatKey;
+        if (settings.frontOnly.includes(student.id) && position.r !== frontRow) return false;
+        if (settings.noBackRow.includes(student.id) && position.r === backRow) return false;
+        if (settings.noSoloSeat.includes(student.id) && !sideNeighborSeatKeys.has(seatKey)) return false;
+        return true;
+      });
+
+      if (allowedSeats.length === 0) {
+        addWarning(`${labelForStudent(student.id)}에게 적용된 자리 조건이 서로 충돌해서 앉을 수 있는 자리가 없습니다.`);
+      }
+    });
+
+    settings.fixedSeats.forEach((rule) => {
+      const fixedPosition = positions.find((position) => createSeatKey(position) === rule.seatKey);
+      if (!fixedPosition) return;
+      const studentName = labelForStudent(rule.studentId);
+
+      if (settings.frontOnly.includes(rule.studentId) && fixedPosition.r !== frontRow) {
+        addWarning(`${studentName}은 맨 앞만 조건이 있지만 자리 고정이 우선되어 고정 자리로 배치됩니다.`);
+      }
+      if (settings.noBackRow.includes(rule.studentId) && fixedPosition.r === backRow) {
+        addWarning(`${studentName}은 맨 뒤 금지 조건이 있지만 자리 고정이 우선되어 고정 자리로 배치됩니다.`);
+      }
+      if (settings.noSoloSeat.includes(rule.studentId) && !sideNeighborSeatKeys.has(rule.seatKey)) {
+        addWarning(`${studentName}은 혼자 앉기 금지 조건이 있지만 자리 고정이 우선되어 고정 자리로 배치됩니다.`);
+      }
+    });
+
+    settings.forbiddenGroups.forEach((rule) => {
+      const fixedMembers = rule.studentIds
+        .map((studentId) => ({ studentId, seatKey: fixedSeatByStudentId.get(studentId) }))
+        .filter((item): item is { studentId: string; seatKey: string } => Boolean(item.seatKey));
+
+      for (let i = 0; i < fixedMembers.length; i += 1) {
+        for (let j = i + 1; j < fixedMembers.length; j += 1) {
+          const firstSeat = positions.find((position) => createSeatKey(position) === fixedMembers[i].seatKey);
+          const secondSeat = positions.find((position) => createSeatKey(position) === fixedMembers[j].seatKey);
+          if (!firstSeat || !secondSeat) continue;
+          const isAdjacent = Math.abs(firstSeat.r - secondSeat.r) + Math.abs(firstSeat.c - secondSeat.c) === 1;
+          if (isAdjacent) {
+            addWarning(`${labelForStudent(fixedMembers[i].studentId)}와 ${labelForStudent(fixedMembers[j].studentId)}는 모여있으면 안됨 조건이 있지만 고정 자리가 서로 붙어 있습니다.`);
+          }
+        }
+      }
+    });
+
+    settings.forbiddenPairs.forEach((rule) => {
+      const firstSeatKey = fixedSeatByStudentId.get(rule.firstStudentId);
+      const secondSeatKey = fixedSeatByStudentId.get(rule.secondStudentId);
+      if (!firstSeatKey || !secondSeatKey) return;
+
+      const firstSeatIndex = seatIndexByKey.get(firstSeatKey);
+      const secondSeatIndex = seatIndexByKey.get(secondSeatKey);
+      if (firstSeatIndex === undefined || secondSeatIndex === undefined) return;
+
+      const firstPairGroup = pairGroupBySeatIndex.get(firstSeatIndex);
+      const secondPairGroup = pairGroupBySeatIndex.get(secondSeatIndex);
+      if (firstPairGroup !== undefined && firstPairGroup === secondPairGroup) {
+        addWarning(`${labelForStudent(rule.firstStudentId)}와 ${labelForStudent(rule.secondStudentId)}는 같이 앉으면 안됨 조건이 있지만 고정 자리가 같은 짝입니다.`);
+      }
+    });
+
+    const checkRuleFeasibility = () => {
+      if (students.length === 0 || positions.length === 0) return 'ok';
+      if (students.length > positions.length) return 'impossible';
+
+      const studentIndexById = new Map(students.map((student, index) => [student.id, index]));
+      const adjacencyBySeatIndex = positions.map((seat) => positions
+        .map((otherSeat, otherIndex) => (
+          Math.abs(seat.r - otherSeat.r) + Math.abs(seat.c - otherSeat.c) === 1 ? otherIndex : -1
+        ))
+        .filter((index) => index >= 0));
+
+      const fixedSeatIndexByStudent = new Map<number, number>();
+      settings.fixedSeats.forEach((rule) => {
+        const studentIndex = studentIndexById.get(rule.studentId);
+        const seatIndex = seatIndexByKey.get(rule.seatKey);
+        if (studentIndex !== undefined && seatIndex !== undefined) {
+          fixedSeatIndexByStudent.set(studentIndex, seatIndex);
+        }
+      });
+
+      const allowedSeatIndicesByStudent = students.map((student, studentIndex) => positions
+        .map((position, seatIndex) => ({ position, seatIndex }))
+        .filter(({ position, seatIndex }) => {
+          const fixedSeatIndex = fixedSeatIndexByStudent.get(studentIndex);
+          if (fixedSeatIndex !== undefined) return fixedSeatIndex === seatIndex;
+          if (settings.frontOnly.includes(student.id) && position.r !== frontRow) return false;
+          if (settings.noBackRow.includes(student.id) && position.r === backRow) return false;
+          if (settings.noSoloSeat.includes(student.id) && !sideNeighborSeatKeys.has(createSeatKey(position))) return false;
+          return true;
+        })
+        .map(({ seatIndex }) => seatIndex));
+
+      if (allowedSeatIndicesByStudent.some((allowedSeats) => allowedSeats.length === 0)) return 'impossible';
+
+      const forbiddenPairTargets = new Map<number, Set<number>>();
+      settings.forbiddenPairs.forEach((rule) => {
+        const firstIndex = studentIndexById.get(rule.firstStudentId);
+        const secondIndex = studentIndexById.get(rule.secondStudentId);
+        if (firstIndex === undefined || secondIndex === undefined || firstIndex === secondIndex) return;
+        if (!forbiddenPairTargets.has(firstIndex)) forbiddenPairTargets.set(firstIndex, new Set<number>());
+        if (!forbiddenPairTargets.has(secondIndex)) forbiddenPairTargets.set(secondIndex, new Set<number>());
+        forbiddenPairTargets.get(firstIndex)!.add(secondIndex);
+        forbiddenPairTargets.get(secondIndex)!.add(firstIndex);
+      });
+
+      const forbiddenGroupTargets = new Map<number, Set<number>>();
+      settings.forbiddenGroups.forEach((rule) => {
+        const members = rule.studentIds
+          .map((studentId) => studentIndexById.get(studentId))
+          .filter((index): index is number => index !== undefined);
+
+        for (let i = 0; i < members.length; i += 1) {
+          for (let j = i + 1; j < members.length; j += 1) {
+            const firstIndex = members[i];
+            const secondIndex = members[j];
+            if (!forbiddenGroupTargets.has(firstIndex)) forbiddenGroupTargets.set(firstIndex, new Set<number>());
+            if (!forbiddenGroupTargets.has(secondIndex)) forbiddenGroupTargets.set(secondIndex, new Set<number>());
+            forbiddenGroupTargets.get(firstIndex)!.add(secondIndex);
+            forbiddenGroupTargets.get(secondIndex)!.add(firstIndex);
+          }
+        }
+      });
+
+      const studentOrder = students
+        .map((_, studentIndex) => ({
+          studentIndex,
+          domainSize: allowedSeatIndicesByStudent[studentIndex].length,
+          weight: (forbiddenPairTargets.get(studentIndex)?.size || 0) + (forbiddenGroupTargets.get(studentIndex)?.size || 0),
+        }))
+        .sort((a, b) => {
+          if (a.domainSize !== b.domainSize) return a.domainSize - b.domainSize;
+          return b.weight - a.weight;
+        })
+        .map((item) => item.studentIndex);
+
+      const seatAssignments = Array<number | null>(students.length).fill(null);
+      const usedSeats = new Set<number>();
+      const startedAt = getNow();
+      let nodeCount = 0;
+
+      const search = (orderIndex: number): 'ok' | 'impossible' | 'unknown' => {
+        if (getNow() - startedAt > 35 || nodeCount > 40000) return 'unknown';
+        nodeCount += 1;
+        if (orderIndex >= studentOrder.length) return 'ok';
+
+        const studentIndex = studentOrder[orderIndex];
+        const candidates = [...allowedSeatIndicesByStudent[studentIndex]]
+          .filter((seatIndex) => !usedSeats.has(seatIndex));
+
+        for (const seatIndex of candidates) {
+          let blocked = false;
+
+          forbiddenPairTargets.get(studentIndex)?.forEach((otherStudentIndex) => {
+            const otherSeatIndex = seatAssignments[otherStudentIndex];
+            if (otherSeatIndex === null || blocked) return;
+            const pairGroup = pairGroupBySeatIndex.get(seatIndex);
+            if (pairGroup !== undefined && pairGroup === pairGroupBySeatIndex.get(otherSeatIndex)) {
+              blocked = true;
+            }
+          });
+
+          forbiddenGroupTargets.get(studentIndex)?.forEach((otherStudentIndex) => {
+            const otherSeatIndex = seatAssignments[otherStudentIndex];
+            if (otherSeatIndex === null || blocked) return;
+            if (adjacencyBySeatIndex[seatIndex]?.includes(otherSeatIndex)) {
+              blocked = true;
+            }
+          });
+
+          if (blocked) continue;
+
+          seatAssignments[studentIndex] = seatIndex;
+          usedSeats.add(seatIndex);
+          const result = search(orderIndex + 1);
+          usedSeats.delete(seatIndex);
+          seatAssignments[studentIndex] = null;
+
+          if (result === 'ok' || result === 'unknown') return result;
+        }
+
+        return 'impossible';
+      };
+
+      return search(0);
+    };
+
+    if (checkRuleFeasibility() === 'impossible') {
+      addWarning('현재 자리 섞기 설정을 모두 동시에 만족하는 배치를 만들 수 없습니다. 조건을 하나 이상 줄이거나 고정 자리를 바꿔 주세요.');
+    }
+
+    return warnings;
+  }, [labelByStudentId, pairMap, positions, settings, students]);
 
   const updateListRule = (key: 'frontOnly' | 'noBackRow' | 'noSoloSeat', nextNames: string[]) => {
     applySettingsChange({ ...settings, [key]: nextNames });
@@ -2963,14 +3289,16 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
     const nextSeatKey = seatOptions.find((option) => !usedSeatKeys.has(option.key))?.key;
 
     if (!nextStudentId || !nextSeatKey) return;
+    const nextRule = { id: createRuleId('fixed-seat-rule'), studentId: nextStudentId, seatKey: nextSeatKey };
 
     applySettingsChange({
       ...settings,
       fixedSeats: [
         ...settings.fixedSeats,
-        { id: createRuleId('fixed-seat-rule'), studentId: nextStudentId, seatKey: nextSeatKey },
+        nextRule,
       ],
     });
+    setActiveFixedSeatRuleId(nextRule.id);
   };
 
   const updateFixedSeatRule = (id: string, field: 'studentId' | 'seatKey', value: string) => {
@@ -2987,6 +3315,16 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
       ...settings,
       fixedSeats: settings.fixedSeats.filter((rule) => rule.id !== id),
     });
+  };
+
+  const updateActiveFixedSeatStudent = (studentId: string) => {
+    if (!activeFixedSeatRule || !studentId) return;
+    updateFixedSeatRule(activeFixedSeatRule.id, 'studentId', studentId);
+  };
+
+  const removeActiveFixedSeatRule = () => {
+    if (!activeFixedSeatRule) return;
+    removeFixedSeatRule(activeFixedSeatRule.id);
   };
 
   const addForbiddenPairRule = () => {
@@ -3087,27 +3425,22 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
     }
 
     return (
-      <div className="rounded-[1.5rem] border border-amber-100 bg-stone-50/80 p-3 lg:p-4">
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <span className="px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700 text-xs font-black">
-            {selectedStudentLabel}
-          </span>
-          <span className="px-3 py-1 rounded-full bg-white border border-stone-200 text-stone-500 text-xs font-black">
-            {selectedSeatLabel}
-          </span>
+      <div className="rounded-2xl bg-[#fdfbf7] p-3 lg:p-4">
+        <div className="mx-auto mb-5 w-full max-w-[360px] h-12 rounded-xl border-[6px] border-[#8b5a2b] flex items-center justify-center relative chalkboard-texture overflow-hidden shadow-xl">
+          <div className="absolute top-1/2 left-1/4 w-24 h-14 bg-white/5 rounded-full rotate-12 blur-xl"></div>
+          <div className="absolute inset-x-0 -bottom-2 h-2 bg-[#6d4520] rounded-b-lg shadow-md mx-1"></div>
+          <span className="text-white/90 text-xl tracking-[0.3em] ml-[0.3em] select-none drop-shadow-md whitespace-nowrap leading-none font-jua">칠판</span>
+          <div className="absolute bottom-1.5 right-3 w-9 h-2 bg-stone-200/20 rounded-sm rotate-1 backdrop-blur-[1px]"></div>
         </div>
-        <div className="mx-auto mb-4 w-full max-w-[260px] rounded-xl border-[6px] border-[#8b5a2b] bg-[#355c52] py-2 text-center shadow-[0_4px_0_#6d4520,0_12px_20px_-12px_rgba(0,0,0,0.35)]">
-          <span className="font-jua text-sm tracking-[0.28em] text-white/90 ml-[0.28em]">칠판</span>
-        </div>
-        <div className="overflow-x-auto pb-1">
+        <div className="w-full pb-1">
           <div
-            className="grid gap-2.5 min-w-max mx-auto"
-            style={{ gridTemplateColumns: `repeat(${seatLayoutMeta.displayedCols.length}, 76px)` }}
+            className="grid gap-x-2.5 gap-y-4 mx-auto w-full max-w-5xl"
+            style={{ gridTemplateColumns: `repeat(${seatLayoutMeta.displayedCols.length}, minmax(0, 1fr))` }}
           >
             {seatLayoutMeta.displayedRows.flatMap((rowValue) => seatLayoutMeta.displayedCols.map((colValue) => {
               const seatKey = `${rowValue},${colValue}`;
               if (!seatLayoutMeta.seatKeySet.has(seatKey)) {
-                return <div key={`blank-${seatKey}`} className="aspect-[1.25/1] opacity-0 pointer-events-none" />;
+                return <div key={`blank-${seatKey}`} className="aspect-[1.3/1] opacity-0 pointer-events-none" />;
               }
 
               const assignedRule = fixedSeatRuleBySeatKey.get(seatKey);
@@ -3115,61 +3448,59 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
               const assignedToOtherRule = assignedRule !== undefined && assignedRule.id !== rule.id;
               const occupiedLabel = assignedToOtherRule
                 ? (labelByStudentId.get(assignedRule.studentId) || '다른 학생')
-                : '선택 가능';
+                : isSelected
+                  ? selectedStudentLabel
+                  : (seatLayoutMeta.seatLabelByKey.get(seatKey) || seatKey);
 
               return (
                 <button
                   key={seatKey}
                   type="button"
                   onClick={() => {
-                    if (assignedToOtherRule) return;
+                    if (assignedToOtherRule) {
+                      setActiveFixedSeatRuleId(assignedRule.id);
+                      return;
+                    }
                     updateFixedSeatRule(rule.id, 'seatKey', seatKey);
                   }}
-                  disabled={assignedToOtherRule}
-                  className={`relative aspect-[1.25/1] transition-all ${
+                  className={`
+                    relative aspect-[1.3/1] perspective-[1000px] transition-all duration-300 min-w-0
                     assignedToOtherRule
-                      ? 'cursor-not-allowed opacity-75'
+                      ? 'opacity-75 hover:opacity-100'
                       : 'hover:-translate-y-1 active:translate-y-0'
-                  } ${isSelected ? 'scale-[1.03]' : ''}`}
+                  } ${isSelected ? 'scale-105 z-10 ring-4 ring-amber-400 ring-offset-2 rounded-xl shadow-xl' : ''}`}
                 >
-                  <div className={`absolute inset-0 rounded-[1rem] border-t border-[#ffe4b5] overflow-hidden shadow-[0_4px_0_#d6b076,0_12px_18px_-12px_rgba(0,0,0,0.35)] ${
-                    isSelected
-                      ? 'bg-amber-200'
-                      : assignedToOtherRule
-                        ? 'bg-stone-300'
-                        : 'bg-[#f3d09a]'
+                  <div className={`w-full h-full rounded-lg border-t-2 border-[#ffe4b5] relative overflow-hidden flex flex-col items-center justify-center p-1 group transition-transform shadow-[0_4px_0_#d6b076,0_10px_16px_-8px_rgba(0,0,0,0.18)] ${
+                    assignedToOtherRule ? 'bg-stone-300 border-stone-200' : GROUP_COLORS[0]
                   }`}>
                     <div className="absolute inset-0 opacity-10 bg-[linear-gradient(45deg,transparent_25%,#000_25%,#000_50%,transparent_50%,transparent_75%,#000_75%,#000_100%)] [background-size:4px_4px]"></div>
-                    <div className={`absolute inset-[10%] rounded-[0.85rem] border flex flex-col items-center justify-center px-1.5 text-center ${
-                      isSelected
-                        ? 'bg-amber-50 border-amber-200 ring-2 ring-amber-400'
-                        : assignedToOtherRule
-                          ? 'bg-stone-100 border-stone-200'
-                          : 'bg-white border-stone-100'
+                    <div className={`bg-white w-[90%] h-[80%] rounded shadow-sm flex flex-col items-center justify-center relative transform rotate-[0.5deg] border ${
+                      isSelected ? 'border-amber-200 ring-2 ring-amber-400' : 'border-stone-100'
                     }`}>
-                      <span className="text-[10px] font-black text-stone-400 leading-none">
-                        {seatLayoutMeta.seatLabelByKey.get(seatKey) || seatKey}
-                      </span>
-                      <span className={`font-jua text-xs leading-tight mt-1 w-full truncate ${
+                      <div className="absolute -top-1.5 w-8 h-3 bg-white/40 border-l border-r border-white/60 backdrop-blur-[1px] transform -rotate-1 shadow-sm opacity-70"></div>
+                      {assignedToOtherRule && (
+                        <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-md border-2 border-white bg-stone-400">
+                          고
+                        </span>
+                      )}
+                      <span className={`font-jua truncate w-full text-center px-1 leading-none mt-1 tracking-tight ${
                         isSelected
-                          ? 'text-amber-700'
+                          ? 'text-amber-700 text-base lg:text-lg'
                           : assignedToOtherRule
-                            ? 'text-stone-500'
-                            : 'text-stone-700'
+                            ? 'text-stone-500 text-sm lg:text-base'
+                            : 'text-stone-600 text-xs lg:text-sm'
                       }`}>
-                        {isSelected ? selectedStudentLabel : occupiedLabel}
+                        {occupiedLabel}
                       </span>
                     </div>
                   </div>
+                  <span className="sr-only">
+                    {isSelected ? `${selectedStudentLabel} ${selectedSeatLabel}` : occupiedLabel}
+                  </span>
                 </button>
               );
             }))}
           </div>
-        </div>
-        <div className="flex flex-wrap gap-2 mt-4 text-[11px] font-black text-stone-500">
-          <span className="px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700">선택한 자리</span>
-          <span className="px-2.5 py-1 rounded-full bg-white border border-stone-200">선택 가능</span>
-          <span className="px-2.5 py-1 rounded-full bg-stone-100 border border-stone-200 text-stone-500">다른 고정 자리</span>
         </div>
       </div>
     );
@@ -3188,6 +3519,22 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
           </div>
         </div>
       </div>
+
+      {settingWarnings.length > 0 && (
+        <section className="rounded-2xl border-2 border-rose-200 bg-rose-50 p-5 lg:p-6">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-500 mt-0.5 flex-shrink-0" />
+            <div className="flex flex-col gap-2">
+              <h3 className="font-black text-rose-700 text-base lg:text-lg font-jua">설정 충돌 확인 필요</h3>
+              <ul className="list-disc pl-5 text-sm lg:text-base font-bold text-rose-700 space-y-1">
+                {settingWarnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="rounded-2xl border-2 border-stone-200 bg-white p-6 lg:p-7">
         <div className="flex items-center justify-between gap-4">
@@ -3221,58 +3568,71 @@ const ShuffleSettingsView: React.FC<ShuffleSettingsViewProps> = ({ settings, stu
 
       <section className="grid grid-cols-1 xl:grid-cols-2 gap-4 lg:gap-5">
         <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4 xl:col-span-2">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">자리 고정</h3>
-              <p className="text-xs lg:text-sm text-stone-500">특정 학생을 원하는 좌석에 고정</p>
-            </div>
-            <button
-              onClick={addFixedSeatRule}
-              disabled={!canAddFixedSeatRule}
-              className={`px-4 py-2 rounded-xl border-2 font-black text-sm transition-all ${
-                canAddFixedSeatRule
-                  ? 'border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100'
-                  : 'border-stone-200 bg-stone-100 text-stone-400 cursor-not-allowed'
-              }`}
-            >
-              추가
-            </button>
+          <div>
+            <h3 className="font-black text-stone-800 text-lg lg:text-xl font-jua">자리 고정</h3>
+            <p className="text-xs lg:text-sm text-stone-500">학생을 선택하고 좌석표에서 자리를 클릭</p>
           </div>
-          {settings.fixedSeats.length === 0 ? (
-            <div className="text-sm text-stone-400">고정 없음</div>
-          ) : (
-            <div className="space-y-3">
-              {settings.fixedSeats.map((rule) => (
-                <div key={rule.id} className="rounded-[1.75rem] border border-stone-200 bg-white p-4 lg:p-5 flex flex-col gap-4">
-                  <div className="flex flex-col lg:flex-row gap-2 lg:items-center">
-                    <select
-                      value={rule.studentId}
-                      onChange={(e) => updateFixedSeatRule(rule.id, 'studentId', e.target.value)}
-                      className="w-full lg:max-w-xs border-2 border-stone-200 rounded-xl px-3 py-3 bg-white font-bold text-stone-700"
-                    >
-                      <option value="">학생</option>
-                      {studentOptions
-                        .filter((option) => option.id === rule.studentId || !settings.fixedSeats.some((otherRule) => otherRule.id !== rule.id && otherRule.studentId === option.id))
-                        .map((option) => <option key={`${rule.id}-${option.id}-student`} value={option.id}>{option.label}</option>)}
-                    </select>
-                    <div className="flex items-center gap-2 lg:ml-auto">
-                      <span className="px-3 py-2 rounded-xl border border-stone-200 bg-stone-50 text-xs font-black text-stone-500">
-                        {seatLayoutMeta.seatLabelByKey.get(rule.seatKey) || '자리 선택'}
-                      </span>
-                      <button
-                        onClick={() => removeFixedSeatRule(rule.id)}
-                        className="h-12 px-4 rounded-xl border-2 border-rose-200 text-rose-500 hover:bg-rose-50"
-                      >
-                        <span className="sr-only">규칙 삭제</span>
-                        X
-                      </button>
-                    </div>
+          <div className="rounded-2xl border border-stone-200 bg-white overflow-hidden">
+            <div className="flex flex-col md:flex-row md:items-end gap-3 p-3 lg:p-4 border-b border-stone-200 bg-stone-50/80">
+              <div className="flex-1 flex flex-col gap-1">
+                <span className="text-[11px] font-black text-stone-400">고정할 학생</span>
+                {settings.fixedSeats.length === 0 ? (
+                  <div className="h-11 px-3 rounded-xl border-2 border-dashed border-stone-200 bg-white text-stone-400 font-bold text-sm flex items-center">
+                    고정된 학생 없음
                   </div>
-                  {renderFixedSeatMap(rule)}
-                </div>
-              ))}
+                ) : (
+                  <select
+                    value={activeFixedSeatRule?.studentId || ''}
+                    onChange={(e) => updateActiveFixedSeatStudent(e.target.value)}
+                    className="w-full border-2 border-stone-200 rounded-xl px-3 py-2.5 bg-white font-bold text-stone-700 text-sm"
+                  >
+                    <option value="">학생</option>
+                    {studentOptions
+                      .filter((option) => option.id === activeFixedSeatRule?.studentId || !settings.fixedSeats.some((rule) => rule.studentId === option.id))
+                      .map((option) => <option key={`active-fixed-${option.id}`} value={option.id}>{option.label}</option>)}
+                  </select>
+                )}
+              </div>
+              {activeFixedSeatRule && (
+                <span className="px-3 py-2 rounded-xl border border-stone-200 bg-white text-xs font-black text-stone-500">
+                  {seatLayoutMeta.seatLabelByKey.get(activeFixedSeatRule.seatKey) || '좌석표에서 선택'}
+                </span>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={addFixedSeatRule}
+                  disabled={!canAddFixedSeatRule}
+                  className={`h-11 px-4 rounded-xl border-2 font-black text-sm transition-all ${
+                    canAddFixedSeatRule
+                      ? 'border-amber-300 bg-amber-50 text-amber-600 hover:bg-amber-100'
+                      : 'border-stone-200 bg-stone-100 text-stone-400 cursor-not-allowed'
+                  }`}
+                >
+                  고정 추가
+                </button>
+                <button
+                  onClick={removeActiveFixedSeatRule}
+                  disabled={!activeFixedSeatRule}
+                  className={`h-11 px-4 rounded-xl border-2 font-black text-sm ${
+                    activeFixedSeatRule
+                      ? 'border-rose-200 text-rose-500 hover:bg-rose-50'
+                      : 'border-stone-200 text-stone-300 cursor-not-allowed'
+                  }`}
+                >
+                  고정 해제
+                </button>
+              </div>
             </div>
-          )}
+            {activeFixedSeatRule ? (
+              <div className="p-3 lg:p-4 bg-white">
+                {renderFixedSeatMap(activeFixedSeatRule)}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-sm font-bold text-stone-400 bg-white">
+                고정 추가를 눌러 학생을 선택한 뒤 좌석표에서 자리를 클릭하세요.
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="rounded-2xl border-2 border-stone-200 bg-white p-5 lg:p-6 flex flex-col gap-4">
